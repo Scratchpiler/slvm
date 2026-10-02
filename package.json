@@ -1,0 +1,17 @@
+{
+  "name": "slvm",
+  "version": "0.0.1",
+  "description": "Scratch Level Virtual Machine: IR and passes for Scratchpiler",
+  "type": "module",
+  "bin": {
+    "slopt": "bin/slopt.js",
+    "slc": "bin/slc.js"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "license": "AGPL-3.0-only",
+  "devDependencies": {
+    "scratch-vm": "^5.0.300"
+  }
+}

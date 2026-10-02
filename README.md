@@ -4,7 +4,7 @@
 
 It's a parody of [LLVM](https://llvm.org/). LLVM gives C, Rust and Swift a shared IR and a pile of optimization passes before they hit real hardware. SLVM gives a text DSL for a children's block-coding website the same treatment before it hits a JSON blob of colored puzzle pieces. We are aware of the proportions. We're doing it anyway.
 
-> **Status: design stage.** This repository currently holds the idea, the license, and this README. No IR, no passes, no code yet. Everything under [Planned](#planned) describes intent, not shipped behavior.
+> **Status: draft 2.** There is a miniature IR with a text form, a verifier, `constfold`/`dce`, the full legalization pipeline (`-p legalize`), and `slc`, which emits Scratch blocks that run correctly in the real scratch-vm and that Scratchpiler's decompiler reads back. There are two CLIs (`slopt`, `slc`) and a reference interpreter. Scratchpiler does not use SLVM yet. The IR is specified in [docs/ir.md](docs/ir.md), and planned optimizations are in [docs/optimizations.md](docs/optimizations.md). Anything marked *planned* there, or listed under [Planned](#planned) below, is intent rather than shipped behavior.
 
 ---
 
@@ -36,20 +36,20 @@ SLVM exists to sit between the frontend and the block emitter:
 
 ## Planned
 
-Nothing below exists yet.
+Unless marked *(draft)*, nothing below exists yet.
 
-- **A small, explicit IR.** Basic blocks, control-flow edges, and Scratch-shaped operations (variables, lists, broadcasts, clones, custom-block calls) instead of syntax tree nodes.
-- **Pass infrastructure.** Passes declare what they read and what they invalidate, and run in a pipeline you can inspect, reorder and disable.
+- **A small, explicit IR.** *(draft)* Structured regions rather than basic blocks and control-flow edges, because Scratch has no jumps and anything else would need a relooper to get back into C-blocks. Scratch-shaped operations (variables, lists, broadcasts, custom-block calls) instead of syntax tree nodes. See [docs/ir.md](docs/ir.md).
+- **Pass infrastructure.** *(draft: an ordered pipeline that verifies after each pass)* Passes declare what they read and what they invalidate, and run in a pipeline you can inspect, reorder and disable.
 - **Scratch-aware optimizations**, for example:
-  - constant folding and propagation
+  - constant folding and propagation *(draft: `constfold`, using Scratch's casting rules)*
   - dead variable, dead store and unreachable-block elimination
   - loop-invariant code motion
   - inlining small custom blocks (or marking them "run without screen refresh" when that's safe)
   - strength reduction and simplification of arithmetic that Scratch evaluates the slow way
   - block-count reduction, because every block in a script is a block someone has to scroll past
-- **A textual form of the IR**, so a pass's input and output can be printed and diffed, the way `.ll` files are.
+- **A textual form of the IR** *(draft: `.sl`)*, so a pass's input and output can be printed and diffed, the way `.ll` files are.
 - **A decompiler-friendly design**, so the IR can round-trip with what Scratchpiler's decompiler already recognizes (`pyfor`, `for`, `.sort()`, `while`).
-- **A verifier** that rejects malformed IR before it reaches the VM, since the VM will not.
+- **A verifier** *(draft, including the tree-safety check that decides when a value must be stored in a variable before `emit`)* that rejects malformed IR before it reaches the VM, since the VM will not.
 
 ### Non-goals
 
@@ -70,9 +70,9 @@ SLVM is a separate repository so the IR can be developed, tested and versioned w
 | LLVM | SLVM |
 |---|---|
 | Low Level Virtual Machine | **Scratch** Level Virtual Machine |
-| `.ll` | TBD |
-| `opt` | TBD |
-| `llc` | TBD |
+| `.ll` | `.sl` |
+| `opt` | `slopt` |
+| `llc` | `slc` |
 | Compiler infrastructure for serious software | Compiler infrastructure for a cat that moves 10 steps |
 
 ---
