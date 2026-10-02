@@ -1,2 +1,82 @@
 # slvm
-Intermediate representation and optimization infrastructure for Scratchpiler.
+
+**S**cratch **L**evel **V**irtual **M**achine: intermediate representation and optimization infrastructure for [Scratchpiler](https://github.com/Scratchpiler/scratchpiler).
+
+It's a parody of [LLVM](https://llvm.org/). LLVM gives C, Rust and Swift a shared IR and a pile of optimization passes before they hit real hardware. SLVM gives a text DSL for a children's block-coding website the same treatment before it hits a JSON blob of colored puzzle pieces. We are aware of the proportions. We're doing it anyway.
+
+> **Status: design stage.** This repository currently holds the idea, the license, and this README. No IR, no passes, no code yet. Everything under [Planned](#planned) describes intent, not shipped behavior.
+
+---
+
+## Why
+
+Scratchpiler currently compiles in one pass: source → tokens → AST → Scratch blocks (`src/compiler.js`), with a desugaring step in `src/lower.js`. That works, but every optimization or lowering trick has to be welded straight into a ~2,000-line `compile()` function, where it lives next to code that emits opcodes.
+
+Scratch is also a strange target. There are no registers and no stack. Variables are global-ish name lookups, "functions" are custom blocks with their own screen-refresh semantics, and the cost model is *blocks executed per frame*, not cycles. That is exactly the kind of target where a proper IR with explicit passes pays off.
+
+SLVM exists to sit between the frontend and the block emitter:
+
+```
+ .sdsl source
+     │
+     ▼
+ Scratchpiler frontend   tokenize → parse → typecheck → lint
+     │   AST
+     ▼
+ lowering                AST → SLVM IR
+     │   IR
+     ▼
+ SLVM passes             analyze, optimize, legalize
+     │   IR
+     ▼
+ Scratch backend         IR → Scratch blocks → injected into the VM
+```
+
+---
+
+## Planned
+
+Nothing below exists yet.
+
+- **A small, explicit IR.** Basic blocks, control-flow edges, and Scratch-shaped operations (variables, lists, broadcasts, clones, custom-block calls) instead of syntax tree nodes.
+- **Pass infrastructure.** Passes declare what they read and what they invalidate, and run in a pipeline you can inspect, reorder and disable.
+- **Scratch-aware optimizations**, for example:
+  - constant folding and propagation
+  - dead variable, dead store and unreachable-block elimination
+  - loop-invariant code motion
+  - inlining small custom blocks (or marking them "run without screen refresh" when that's safe)
+  - strength reduction and simplification of arithmetic that Scratch evaluates the slow way
+  - block-count reduction, because every block in a script is a block someone has to scroll past
+- **A textual form of the IR**, so a pass's input and output can be printed and diffed, the way `.ll` files are.
+- **A decompiler-friendly design**, so the IR can round-trip with what Scratchpiler's decompiler already recognizes (`pyfor`, `for`, `.sort()`, `while`).
+- **A verifier** that rejects malformed IR before it reaches the VM, since the VM will not.
+
+### Non-goals
+
+- Replacing the Scratchpiler frontend, editor or injector.
+- Being fast enough to matter at LLVM scale. The largest Scratch project is smaller than one LLVM test file.
+- Taking itself seriously.
+
+---
+
+## Relationship to Scratchpiler
+
+SLVM is a separate repository so the IR can be developed, tested and versioned without dragging the userscript along. Scratchpiler is expected to consume it as a dependency and bundle it into `scratchpiler.user.js`; until the IR exists, Scratchpiler keeps compiling the way it does today.
+
+---
+
+## Naming
+
+| LLVM | SLVM |
+|---|---|
+| Low Level Virtual Machine | **Scratch** Level Virtual Machine |
+| `.ll` | TBD |
+| `opt` | TBD |
+| `llc` | TBD |
+| Compiler infrastructure for serious software | Compiler infrastructure for a cat that moves 10 steps |
+
+---
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE).
