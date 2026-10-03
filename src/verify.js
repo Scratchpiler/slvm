@@ -5,6 +5,12 @@ import { findHazard, rootContext } from './passes/spill.js';
 export function verify(mod, { legal = false } = {}) {
     const errors = [];
 
+    for (const target of mod.targets) {
+        for (const proc of target.procs) {
+            if (proc.extern && proc.body.length) errors.push(`proc @${proc.name}: an extern proc has no body`);
+        }
+    }
+
     for (const { target, proc, script, body } of roots(mod)) {
         const where = proc ? `proc @${proc.name}` : `script ${script.hat.event}`;
         const fail = (op, msg) => errors.push(`${where}${op?.line ? ` (line ${op.line})` : ''}: ${msg}`);
@@ -43,6 +49,7 @@ export function verify(mod, { legal = false } = {}) {
             if (op.op === 'call') {
                 const callee = target.procs.find((p) => p.name === op.callee);
                 if (!callee) fail(op, `call to undefined proc @${op.callee}`);
+                else if (callee.extern && op.result !== null) fail(op, `@${op.callee} is extern; its return value is unknown`);
                 else {
                     if (callee.params.length !== op.args.length) fail(op, `@${op.callee} takes ${callee.params.length} argument(s), got ${op.args.length}`);
                     if (op.result !== null && !callee.returns) fail(op, `@${op.callee} does not return a value`);
@@ -65,6 +72,8 @@ export function verify(mod, { legal = false } = {}) {
                 if (legal) fail(op, `\`${op.op}\` must be lowered (lower-break)`);
             }
             if (op.op === 'cond' && !ctx.inCond) fail(op, '`cond` outside a condition region');
+            if (op.op === 'value' && !ctx.inHat) fail(op, '`value` outside a hat region');
+            if (legal && op.op === 'truthy' && op.args[0]?.lit !== undefined) fail(op, '`truthy` of a literal has no block form; materialize it first');
 
             if (spec.regions) {
                 const [min, max] = spec.regions;
@@ -84,8 +93,12 @@ export function verify(mod, { legal = false } = {}) {
                 if (op.op === 'cond' && i !== region.length - 1) fail(op, '`cond` must end its region');
                 if (isTerminator(op) && i !== region.length - 1) fail(region[i + 1], `unreachable op after \`${op.op}\``);
                 const spec = OPS[op.op];
+                if (legal && spec.stepRegion !== undefined && op.regions[spec.stepRegion]) {
+                    fail(op, `\`${op.op}\` step region must be lowered (lower-break)`);
+                }
                 op.regions.forEach((r, ri) => {
                     const isCond = spec.condRegion === ri;
+                    const isStep = spec.stepRegion === ri;
                     if (isCond) {
                         if (r.at(-1)?.op !== 'cond') fail(op, `\`${op.op}\` condition region must end with \`cond\``);
                         if (legal) {
@@ -97,7 +110,7 @@ export function verify(mod, { legal = false } = {}) {
                         }
                     }
                     checkRegion(r, scope, {
-                        inLoop: (spec.loop && !isCond) || (ctx.inLoop && !isCond),
+                        inLoop: !isCond && !isStep && (spec.loop || ctx.inLoop),
                         inCond: isCond,
                     });
                 });
@@ -106,6 +119,24 @@ export function verify(mod, { legal = false } = {}) {
         };
 
         checkRegion(body, new Set(), { inLoop: false, inCond: false });
+
+        const hatRegion = script?.hat.with;
+        if (hatRegion) {
+            checkRegion(hatRegion, new Set(), { inLoop: false, inCond: false, inHat: true });
+            if (hatRegion.at(-1)?.op !== 'value') fail(null, 'a hat region must end with `value`');
+            const uses = new Map();
+            for (const op of hatRegion) {
+                for (const a of op.args) if (a.ref !== undefined) uses.set(a.ref, (uses.get(a.ref) ?? 0) + 1);
+                if (op.op !== 'value' && (op.result === null || EFFECT_RANK[effectOf(op)] > EFFECT_RANK.read)) {
+                    fail(op, `\`${op.op}\` cannot appear in a hat region, which may only compute a value`);
+                }
+            }
+            if (legal) {
+                for (const op of hatRegion) {
+                    if (op.result !== null && uses.get(op.result) !== 1) fail(op, `%${op.result} in a hat region must be used exactly once`);
+                }
+            }
+        }
 
         if (legal && !errors.length) {
             const hazard = findHazard(body, rootContext(mod, { target, proc, script }));

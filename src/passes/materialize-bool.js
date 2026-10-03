@@ -1,10 +1,15 @@
 import { roots, idGenerator, mkOp, ref, lit } from '../ir.js';
 import { OPS } from '../ops.js';
+import { toBoolean } from '../cast.js';
 
 function materializeRegion(region, gen) {
     const out = [];
     for (const op of region) {
         op.regions = op.regions.map((r) => materializeRegion(r, gen));
+        if (op.op === 'truthy' && op.args[0].lit !== undefined) {
+            out.push(mkOp('eq', [lit('1'), lit(toBoolean(op.args[0].lit) ? '1' : '0')], { result: op.result }));
+            continue;
+        }
         for (const i of OPS[op.op].boolArgs || []) {
             const a = op.args[i];
             if (typeof a?.lit !== 'boolean') continue;

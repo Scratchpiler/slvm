@@ -83,7 +83,9 @@ function reachesSelf(def, point, where, ctx) {
     const { ops } = intervalOps(def, point, where);
     let hit = false;
     deep(ops, (op) => {
-        if (op.op === 'call' && writesOf(op, ctx.summaries).includes(`proc:${ctx.proc.name}`)) hit = true;
+        if (op.op !== 'call') return;
+        const writes = writesOf(op, ctx.summaries);
+        if (writes.includes(`proc:${ctx.proc.name}`) || writes.includes(ANYTHING)) hit = true;
     });
     return hit;
 }

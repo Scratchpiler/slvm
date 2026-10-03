@@ -24,22 +24,34 @@ function setsFlag(op, flags) {
 
 function lowerLoop(loop, ctx) {
     const bodyIndex = loop.op === 'until' ? 1 : 0;
+    const step = loop.op === 'until' && loop.regions.length > 2 ? loop.regions.pop() : null;
     const found = { brk: false, cont: false };
     scan(loop.regions[bodyIndex], found);
-    if (!found.brk && !found.cont) return [loop];
 
     const { mod, target, gen } = ctx;
-    const brk = found.brk ? freshInternal(mod, target, 'var', 'brk') : null;
-    const cont = found.cont ? freshInternal(mod, target, 'var', 'cont') : null;
-    const flags = [brk, cont].filter(Boolean);
-    const setFlag = (name, v) => mkOp('var.set', [sym(name), lit(v)]);
-
     const flagEquals = (name, v, into) => {
         const got = gen();
         const eq = gen();
         into.push(mkOp('var.get', [sym(name)], { result: got }), mkOp('eq', [ref(got), lit(v)], { result: eq }));
         return eq;
     };
+    const withStep = (region, brkFlag) => {
+        if (!step || (region.length && isTerminator(region.at(-1)))) return region;
+        if (!brkFlag) return [...region, ...step];
+        const ops = [];
+        const notBroken = flagEquals(brkFlag, 0, ops);
+        return [...region, ...ops, mkOp('if', [ref(notBroken)], { regions: [step] })];
+    };
+
+    if (!found.brk && !found.cont) {
+        loop.regions[bodyIndex] = withStep(loop.regions[bodyIndex], null);
+        return [loop];
+    }
+
+    const brk = found.brk ? freshInternal(mod, target, 'var', 'brk') : null;
+    const cont = found.cont ? freshInternal(mod, target, 'var', 'cont') : null;
+    const flags = [brk, cont].filter(Boolean);
+    const setFlag = (name, v) => mkOp('var.set', [sym(name), lit(v)]);
 
     const guard = (rest) => {
         const ops = [];
@@ -69,7 +81,7 @@ function lowerLoop(loop, ctx) {
         return out;
     };
 
-    let body = transform(loop.regions[bodyIndex]);
+    let body = withStep(transform(loop.regions[bodyIndex]), brk);
     if (cont) body = [setFlag(cont, 0), ...body];
     if (!brk) {
         loop.regions[bodyIndex] = body;

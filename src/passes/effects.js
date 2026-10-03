@@ -5,7 +5,7 @@ export const ANYTHING = '*';
 export const WORLD = 'world';
 export const LOOP_OPS = new Set(['repeat', 'forever', 'until', 'wait.until']);
 
-const LIST_READS = new Set(['list.get', 'list.len', 'list.has', 'list.index']);
+const LIST_READS = new Set(['list.get', 'list.len', 'list.has', 'list.index', 'list.contents']);
 const LIST_WRITES = new Set(['list.add', 'list.del', 'list.ins', 'list.set', 'list.clear']);
 
 export function directReads(op) {
@@ -28,7 +28,7 @@ const EXPLICIT_YIELDS = (op) => effectOf(op) === 'yield' && op.op !== 'call' && 
 export function summarize(target) {
     const summaries = new Map();
     for (const proc of target.procs) {
-        const s = { proc, writes: new Set(), callees: new Set(), explicitYield: false, reaches: new Set() };
+        const s = { proc, writes: new Set(proc.extern ? [ANYTHING] : []), callees: new Set(), explicitYield: !!proc.extern, reaches: new Set() };
         walk(proc.body, (op) => {
             for (const w of ownWrites(op)) s.writes.add(w);
             if (op.op === 'call') s.callees.add(op.callee);

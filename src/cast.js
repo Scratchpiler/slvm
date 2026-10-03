@@ -79,6 +79,7 @@ export const EVAL = {
     and: (a, b) => toBoolean(a) && toBoolean(b),
     or: (a, b) => toBoolean(a) || toBoolean(b),
     not: (a) => !toBoolean(a),
+    truthy: (a) => toBoolean(a),
     join: (a, b) => toString(a) + toString(b),
     letter: (i, s) => {
         const index = toNumber(i) - 1;

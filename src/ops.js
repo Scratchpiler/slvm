@@ -20,6 +20,7 @@ export const OPS = {
     and: { ...pure('bool', 2), boolArgs: [0, 1] },
     or: { ...pure('bool', 2), boolArgs: [0, 1] },
     not: { ...pure('bool', 1), boolArgs: [0] },
+    truthy: pure('bool', 1),
     join: pure('val', 2),
     letter: pure('val', 2),
     length: pure('val', 1),
@@ -34,6 +35,7 @@ export const OPS = {
     'var.change': { ...write(2), operands: ['var'] },
     'list.get': { ...read('val', 2), operands: ['list'] },
     'list.len': { ...read('val', 1), operands: ['list'] },
+    'list.contents': { ...read('val', 1), operands: ['list'] },
     'list.has': { ...read('bool', 2), operands: ['list'] },
     'list.index': { ...read('val', 2), operands: ['list'] },
     'list.add': { ...write(2), operands: ['list'] },
@@ -41,6 +43,10 @@ export const OPS = {
     'list.ins': { ...write(3), operands: ['list'] },
     'list.set': { ...write(3), operands: ['list'] },
     'list.clear': { ...write(1), operands: ['list'] },
+    'var.show': { ...write(1), operands: ['var'] },
+    'var.hide': { ...write(1), operands: ['var'] },
+    'list.show': { ...write(1), operands: ['list'] },
+    'list.hide': { ...write(1), operands: ['list'] },
 
     broadcast: write(1),
     'broadcast.wait': { effect: 'yield', type: null, arity: 1 },
@@ -52,16 +58,17 @@ export const OPS = {
     if: { effect: 'control', type: null, arity: 1, regions: [1, 2], boolArgs: [0] },
     repeat: { effect: 'yield', type: null, arity: 1, regions: [1, 1], loop: true },
     forever: { effect: 'yield', type: null, arity: 0, regions: [1, 1], loop: true, terminator: true },
-    until: { effect: 'yield', type: null, arity: 0, regions: [2, 2], loop: true, condRegion: 0 },
+    until: { effect: 'yield', type: null, arity: 0, regions: [2, 3], loop: true, condRegion: 0, stepRegion: 2 },
     'wait.until': { effect: 'yield', type: null, arity: 0, regions: [1, 1], condRegion: 0 },
 
     cond: { effect: 'control', type: null, arity: 1, boolArgs: [0] },
+    value: { effect: 'control', type: null, arity: 1, terminator: true },
     break: { effect: 'control', type: null, arity: 0, terminator: true },
     continue: { effect: 'control', type: null, arity: 0, terminator: true },
     ret: { effect: 'control', type: null, arity: null, terminator: true },
 };
 
-export const REGION_KEYWORDS = { if: [null, 'else'], until: [null, 'do'] };
+export const REGION_KEYWORDS = { if: [null, 'else'], until: [null, 'do', 'step'] };
 
 const SB_YIELDING = new Set([
     'looks_sayforsecs', 'looks_thinkforsecs', 'motion_glidesecstoxy', 'motion_glideto',

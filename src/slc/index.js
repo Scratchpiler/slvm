@@ -5,8 +5,8 @@ import { walk, lookupVar } from '../ir.js';
 export class SlcError extends Error {}
 
 const SCRIPT_SPACING = 400;
-const SLOT_SHADOWS = { num: ['math_number', 'NUM'], text: ['text', 'TEXT'] };
-const VALUE_TYPE_KINDS = { number: 'num', string: 'text', boolean: 'bool' };
+const SLOT_SHADOWS = { num: ['math_number', 'NUM'], text: ['text', 'TEXT'], color: ['colour_picker', 'COLOUR'] };
+const VALUE_TYPE_KINDS = { number: 'num', string: 'text', boolean: 'bool', color: 'color' };
 const VARIABLE_TYPES = { var: '', list: 'list' };
 
 function counterUid(prefix) {
@@ -25,7 +25,7 @@ function usesBoolArg(proc, param) {
     return found;
 }
 
-export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariable = () => undefined, resolveBroadcast = () => undefined } = {}) {
+export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariable = () => undefined, resolveBroadcast = () => undefined, resolveProc = () => undefined } = {}) {
     const problems = verify(mod, { legal: true });
     if (problems.length) throw new SlcError(`IR is not legal:\n  ${problems.join('\n  ')}`);
     const schema = { ...DEFAULT_SB_SCHEMA, ...opcodes };
@@ -52,6 +52,12 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
         const blocks = output[ti].blocks;
         const isStage = target.kind === 'stage';
         const signatures = new Map(target.procs.map((proc) => {
+            if (proc.extern) {
+                const existing = resolveProc(target, proc);
+                if (!existing) throw new SlcError(`extern proc @${proc.name} has no existing prototype (resolveProc returned nothing)`);
+                const kinds = (existing.proccode.match(/%[sbn]/g) ?? []).map((k) => (k === '%b' ? 'bool' : 'text'));
+                return [proc.name, { ...existing, kinds, warp: String(existing.warp ?? proc.warp) }];
+            }
             const kinds = proc.params.map((p) => (usesBoolArg(proc, p) ? 'bool' : 'text'));
             return [proc.name, {
                 proccode: [proc.name, ...kinds.map((k) => (k === 'bool' ? '%b' : '%s'))].join(' '),
@@ -72,9 +78,9 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
         };
         const broadcastField = (name) => ({ name: 'BROADCAST_OPTION', value: name, id: broadcastId(name), variableType: 'broadcast_msg' });
 
-        function emitRoot(body, parent) {
+        function emitter(...regions) {
             const defs = new Map();
-            walk(body, (op) => { if (op.result !== null) defs.set(op.result, op); });
+            for (const region of regions) walk(region, (op) => { if (op.result !== null) defs.set(op.result, op); });
             const shadowFor = (kind, value, parent, menu) => {
                 if (kind === 'broadcast') {
                     return add('event_broadcast_menu', parent, { shadow: true, fields: { BROADCAST_OPTION: broadcastField(String(value)) } }).id;
@@ -86,7 +92,10 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
             const setInput = (block, name, kind, operand, menu) => {
                 if (kind === 'bool') {
                     if (operand.ref === undefined) throw new SlcError(`${block.opcode}.${name}: boolean slot needs a reporter`);
-                    block.inputs[name] = { name, block: emitValue(operand.ref, block.id), shadow: null };
+                    const def = defs.get(operand.ref);
+                    const reporter = def.op === 'truthy' ? def.args[0] : operand;
+                    if (reporter.ref === undefined) throw new SlcError(`${block.opcode}.${name}: \`truthy\` of a literal must be materialized first`);
+                    block.inputs[name] = { name, block: emitValue(reporter.ref, block.id), shadow: null };
                     return;
                 }
                 if (operand.ref === undefined) {
@@ -126,6 +135,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
 
             function emitValue(id, parent) {
                 const op = defs.get(id);
+                if (op.op === 'truthy') throw new SlcError('`truthy` can only be used directly in a boolean slot');
                 if (op.op === 'arg' || op.op === 'arg.b') {
                     const opcode = op.op === 'arg' ? 'argument_reporter_string_number' : 'argument_reporter_boolean';
                     return add(opcode, parent, { fields: { VALUE: { name: 'VALUE', value: op.args[0].name } } }).id;
@@ -204,8 +214,9 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
                 return first;
             }
 
-            return emitStack(body, parent);
+            return { emitStack, setInput };
         }
+        const emitRoot = (body, parent) => emitter(body).emitStack(body, parent);
 
         let x = 50;
         const place = (block) => {
@@ -214,6 +225,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
         };
 
         for (const proc of target.procs) {
+            if (proc.extern) continue;
             const sig = signatures.get(proc.name);
             const def = add('procedures_definition', null);
             const proto = add('procedures_prototype', def.id, {
@@ -239,11 +251,19 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
         for (const script of target.scripts) {
             const hatSpec = HATS[script.hat.event];
             if (!hatSpec) throw new SlcError(`unknown hat \`${script.hat.event}\``);
-            const { opcode, fields = {}, broadcastField: message } = hatSpec(script.hat.arg, isStage);
+            const { opcode, fields = {}, broadcastField: message, numberInput } = hatSpec(script.hat.arg, isStage, script.hat.value);
             const hat = add(opcode, null, {
                 fields: Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, { name: k, value: v }])),
             });
             if (message !== undefined) hat.fields.BROADCAST_OPTION = broadcastField(message);
+            if (script.hat.with) {
+                const region = script.hat.with;
+                emitter(region).setInput(hat, 'VALUE', 'num', region.at(-1).args[0]);
+            } else if (numberInput) {
+                const [name, value] = numberInput;
+                const shadow = add('math_number', hat.id, { shadow: true, fields: { NUM: { name: 'NUM', value: String(value) } } });
+                hat.inputs[name] = { name, block: shadow.id, shadow: shadow.id };
+            }
             place(hat);
             hat.next = emitRoot(script.body, hat.id);
         }

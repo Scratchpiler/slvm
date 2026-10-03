@@ -13,5 +13,10 @@
   "license": "AGPL-3.0-only",
   "devDependencies": {
     "scratch-vm": "^5.0.300"
+  },
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./testing": "./src/testing/scratch-vm.js"
   }
 }

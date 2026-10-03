@@ -35,6 +35,7 @@ export const BLOCKS = {
     'var.change': { opcode: 'data_changevariableby', symbol: ['VARIABLE', 'var'], inputs: [num('VALUE')] },
     'list.get': { opcode: 'data_itemoflist', symbol: ['LIST', 'list'], inputs: [num('INDEX')] },
     'list.len': { opcode: 'data_lengthoflist', symbol: ['LIST', 'list'], inputs: [] },
+    'list.contents': { opcode: 'data_listcontents', symbol: ['LIST', 'list'], inputs: [] },
     'list.has': { opcode: 'data_listcontainsitem', symbol: ['LIST', 'list'], inputs: [text('ITEM')] },
     'list.index': { opcode: 'data_itemnumoflist', symbol: ['LIST', 'list'], inputs: [text('ITEM')] },
     'list.add': { opcode: 'data_addtolist', symbol: ['LIST', 'list'], inputs: [text('ITEM')] },
@@ -42,6 +43,10 @@ export const BLOCKS = {
     'list.ins': { opcode: 'data_insertatlist', symbol: ['LIST', 'list'], inputs: [num('INDEX'), text('ITEM')] },
     'list.set': { opcode: 'data_replaceitemoflist', symbol: ['LIST', 'list'], inputs: [num('INDEX'), text('ITEM')] },
     'list.clear': { opcode: 'data_deletealloflist', symbol: ['LIST', 'list'], inputs: [] },
+    'var.show': { opcode: 'data_showvariable', symbol: ['VARIABLE', 'var'], inputs: [] },
+    'var.hide': { opcode: 'data_hidevariable', symbol: ['VARIABLE', 'var'], inputs: [] },
+    'list.show': { opcode: 'data_showlist', symbol: ['LIST', 'list'], inputs: [] },
+    'list.hide': { opcode: 'data_hidelist', symbol: ['LIST', 'list'], inputs: [] },
 
     broadcast: { opcode: 'event_broadcast', inputs: [['BROADCAST_INPUT', 'broadcast']] },
     'broadcast.wait': { opcode: 'event_broadcastandwait', inputs: [['BROADCAST_INPUT', 'broadcast']] },
@@ -57,6 +62,11 @@ export const HATS = {
     key: (arg) => ({ opcode: 'event_whenkeypressed', fields: { KEY_OPTION: arg ?? 'space' } }),
     backdrop: (arg) => ({ opcode: 'event_whenbackdropswitchesto', fields: { BACKDROP: arg ?? '' } }),
     receive: (arg) => ({ opcode: 'event_whenbroadcastreceived', broadcastField: arg ?? '' }),
+    greater: (arg, isStage, value) => ({
+        opcode: 'event_whengreaterthan',
+        fields: { WHENGREATERTHANMENU: arg ?? 'TIMER' },
+        numberInput: ['VALUE', value ?? 10],
+    }),
 };
 
 export const DEFAULT_SB_SCHEMA = {

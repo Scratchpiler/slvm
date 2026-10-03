@@ -22,8 +22,11 @@ function rotate(loop, ctx) {
     ];
 
     const body = loop.op === 'until' ? loop.regions[1] : [];
-    if (!(body.length && isTerminator(body.at(-1)))) body.push(...store(cloneRegion(condRegion, gen)));
-    return [...store(condRegion), mkOp('until', [], { regions: [test, body] })];
+    const step = loop.regions[2];
+    const recompute = store(cloneRegion(condRegion, gen));
+    if (step) step.push(...recompute);
+    else if (!(body.length && isTerminator(body.at(-1)))) body.push(...recompute);
+    return [...store(condRegion), mkOp('until', [], { regions: [test, body, ...(step ? [step] : [])] })];
 }
 
 function rotateRegion(region, ctx) {

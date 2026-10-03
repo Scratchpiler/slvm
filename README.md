@@ -4,7 +4,7 @@
 
 It's a parody of [LLVM](https://llvm.org/). LLVM gives C, Rust and Swift a shared IR and a pile of optimization passes before they hit real hardware. SLVM gives a text DSL for a children's block-coding website the same treatment before it hits a JSON blob of colored puzzle pieces. We are aware of the proportions. We're doing it anyway.
 
-> **Status: draft 2.** There is a miniature IR with a text form, a verifier, `constfold`/`dce`, the full legalization pipeline (`-p legalize`), and `slc`, which emits Scratch blocks that run correctly in the real scratch-vm and that Scratchpiler's decompiler reads back. There are two CLIs (`slopt`, `slc`) and a reference interpreter. Scratchpiler does not use SLVM yet. The IR is specified in [docs/ir.md](docs/ir.md), and planned optimizations are in [docs/optimizations.md](docs/optimizations.md). Anything marked *planned* there, or listed under [Planned](#planned) below, is intent rather than shipped behavior.
+> **Status: draft 4.** There is a miniature IR with a text form, a verifier, `constfold`/`dce`, the full legalization pipeline (`-p legalize`), `slc` (blocks that run correctly in the real scratch-vm), two CLIs (`slopt`, `slc`) and a reference interpreter. Scratchpiler has an **opt-in SLVM backend** (Settings → Compiler) with irgen on its side. It compiles the whole language, including pointers, and on 10,400 randomly generated programs it matched an independent reference interpreter every time (the classic backend was wrong on 253). The IR is specified in [docs/ir.md](docs/ir.md), and planned optimizations are in [docs/optimizations.md](docs/optimizations.md). Anything marked *planned* there, or listed under [Planned](#planned) below, is intent rather than shipped behavior.
 
 ---
 
@@ -61,7 +61,7 @@ Unless marked *(draft)*, nothing below exists yet.
 
 ## Relationship to Scratchpiler
 
-SLVM is a separate repository so the IR can be developed, tested and versioned without dragging the userscript along. Scratchpiler is expected to consume it as a dependency and bundle it into `scratchpiler.user.js`; until the IR exists, Scratchpiler keeps compiling the way it does today.
+SLVM is a separate repository so the IR can be developed, tested and versioned without dragging the userscript along. Scratchpiler consumes it as an npm dependency (`file:../slvm` while the repositories sit side by side) and bundles it into `scratchpiler.user.js`. `slvm/testing` exports the headless scratch-vm harness for tests; it is the only part that needs the `scratch-vm` dev dependency, and it is not bundled.
 
 ---
 

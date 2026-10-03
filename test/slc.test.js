@@ -1,8 +1,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { parse, run, runPipeline, slc, SlcError, StepLimitExceeded } from '../src/index.js';
-import { hasScratchVM, runInScratchVM, speechOf } from './scratch-vm.js';
+import { parse, print, verify, run, runPipeline, slc, SlcError, StepLimitExceeded } from '../src/index.js';
+import { hasScratchVM, runInScratchVM, speechOf } from '../src/testing/scratch-vm.js';
 
 const examples = new URL('../examples/', import.meta.url);
 const exampleFiles = readdirSync(examples).filter((f) => f.endsWith('.sl'));
@@ -125,5 +125,71 @@ test('Scratchpiler decompiles slc output into source it can compile again', { sk
         assert.doesNotMatch(source, /unsupported|\/\/ Error/, `${file}:\n${source}`);
         const { errors } = compileSource(source, vm, 'Sprite1');
         assert.deepEqual(errors, [], `${file} decompiled to:\n${source}`);
+    }
+});
+
+test('truthy puts the round reporter straight into the boolean slot', () => {
+    const out = compileSrc(`sprite "S" {\n  var @x\n  script flag {\n    %0 = var.get @x\n    %1 = truthy %0\n    if %1 {\n      var.set @x, 0\n    }\n  }\n}\n`);
+    const [ifBlock] = byOpcode(out, 'control_if');
+    assert.equal(allBlocks(out)[ifBlock.inputs.CONDITION.block].opcode, 'data_variable');
+});
+
+test('truthy of a literal is materialized with Scratch truthiness', () => {
+    const src = (v) => `sprite "S" {\n  var @x\n  script flag {\n    %0 = truthy ${v}\n    if %0 {\n      var.set @x, 1\n    }\n  }\n}\n`;
+    for (const [v, expected] of [['"false"', '0'], ['"0"', '0'], ['""', '0'], ['"hello"', '1'], ['0', '0'], ['2', '1']]) {
+        const out = compileSrc(src(v));
+        const [eq] = byOpcode(out, 'operator_equals');
+        assert.equal(allBlocks(out)[eq.inputs.OPERAND2.block].fields.TEXT.value, expected, v);
+    }
+});
+
+test('greater hats keep their sensor and threshold', () => {
+    const src = `sprite "S" {\n  var @x\n\n  script greater "LOUDNESS" 25 {\n    var.set @x, 1\n  }\n}\n`;
+    assert.match(print(parse(src)), /script greater "LOUDNESS" 25 \{/);
+    const out = slc(parse(src));
+    const [hat] = byOpcode(out, 'event_whengreaterthan');
+    assert.equal(hat.fields.WHENGREATERTHANMENU.value, 'LOUDNESS');
+    assert.equal(allBlocks(out)[hat.inputs.VALUE.block].fields.NUM.value, '25');
+});
+
+test('show and hide ops become monitor blocks', () => {
+    const out = slc(parse(`sprite "S" {\n  var @x\n  list @l\n  script flag {\n    var.show @x\n    list.hide @l\n  }\n}\n`));
+    assert.equal(byOpcode(out, 'data_showvariable')[0].fields.VARIABLE.value, 'x');
+    assert.equal(byOpcode(out, 'data_hidelist')[0].fields.LIST.value, 'l');
+});
+
+test('extern procs are called with the existing prototype and never defined', () => {
+    const src = `sprite "S" {\n\n  proc @jump(h) warp extern {\n  }\n\n  script flag {\n    call @jump(5)\n  }\n}\n`;
+    assert.equal(print(parse(src)), src);
+    const out = slc(parse(src), { resolveProc: () => ({ proccode: 'jump %s', argumentids: ['real-arg'], warp: 'true' }) });
+    const [call] = byOpcode(out, 'procedures_call');
+    assert.equal(call.mutation.proccode, 'jump %s');
+    assert.deepEqual(Object.keys(call.inputs), ['real-arg']);
+    assert.equal(byOpcode(out, 'procedures_definition').length, 0);
+    assert.throws(() => slc(parse(src)), SlcError);
+});
+
+test('a hat region computes the hat threshold as a reporter', () => {
+    const src = `sprite "S" {\n  var @limit\n  var @x\n\n  script greater "TIMER" with {\n    %0 = var.get @limit\n    %1 = mul %0, 2\n    value %1\n  } {\n    var.set @x, 1\n  }\n}\n`;
+    assert.equal(print(parse(src)), src);
+    const out = slc(parse(src));
+    const [hat] = byOpcode(out, 'event_whengreaterthan');
+    const blocks = allBlocks(out);
+    const reporter = blocks[hat.inputs.VALUE.block];
+    assert.equal(reporter.opcode, 'operator_multiply');
+    assert.equal(blocks[reporter.inputs.NUM1.block].opcode, 'data_variable');
+    assert.equal(blocks[hat.inputs.VALUE.shadow].opcode, 'math_number');
+});
+
+test('hat regions may only compute a value', () => {
+    const src = `sprite "S" {\n  var @x\n\n  script greater "TIMER" with {\n    var.set @x, 1\n    value 3\n  } {\n  }\n}\n`;
+    assert.match(verify(parse(src)).join('\n'), /cannot appear in a hat region/);
+});
+
+test('list.contents follows Scratch: letters join without spaces, anything else with spaces', async (t) => {
+    const src = (items) => `sprite "S" {\n  var @x\n  list @l\n  script flag {\n${items.map((i) => `    list.add @l, ${JSON.stringify(i)}\n`).join('')}    %0 = list.contents @l\n    var.set @x, %0\n  }\n}\n`;
+    for (const [items, expected] of [[['a', 'b', 'c'], 'abc'], [['ab', 'c'], 'ab c'], [['1', '2'], '12']]) {
+        assert.equal(run(parse(src(items))).vars.x, expected);
+        if (hasScratchVM) assert.equal(String((await runInScratchVM(compile(parse(src(items))))).vars.x), expected);
     }
 });

@@ -61,6 +61,11 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
                 return l[listIndex(l, v(1))] ?? '';
             }
             case 'list.len': return list(frame, op.args[0].sym).length;
+            case 'list.contents': {
+                const items = list(frame, op.args[0].sym);
+                const letters = items.every((x) => typeof x === 'string' && x.length === 1);
+                return items.map(toString).join(letters ? '' : ' ');
+            }
             case 'list.has': return list(frame, op.args[0].sym).some((x) => compare(x, v(1)) === 0);
             case 'list.index': return list(frame, op.args[0].sym).findIndex((x) => compare(x, v(1)) === 0) + 1;
             case 'sb': return 0;
@@ -71,6 +76,7 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
 
     function call(op, frame) {
         const proc = frame.target.procs.find((p) => p.name === op.callee);
+        if (proc.extern) throw new Error(`cannot run extern proc @${proc.name}`);
         const args = new Map(proc.params.map((p, i) => [p, value(op.args[i], frame)]));
         const inner = { target: frame.target, args, values: new Map(), defs: new Map() };
         try {
@@ -130,6 +136,14 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
                 return;
             }
             case 'list.clear': return void list(frame, name).splice(0);
+            case 'var.show':
+            case 'var.hide':
+                decl(frame, name, 'var');
+                return;
+            case 'list.show':
+            case 'list.hide':
+                decl(frame, name, 'list');
+                return;
             case 'sb': return void trace.push({ op: op.opcode, args: Object.fromEntries(op.keys.map((k, i) => [k, v(i)])) });
             case 'broadcast':
             case 'broadcast.wait': return void trace.push({ op: op.op, args: { message: toString(v(0)) } });
@@ -154,7 +168,10 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
                 while (loopBody(op.regions[0], frame)) if (++steps > maxSteps) throw new StepLimitExceeded(`more than ${maxSteps} steps`);
                 return;
             case 'until':
-                while (!condition(op.regions[0], frame)) if (!loopBody(op.regions[1], frame)) break;
+                while (!condition(op.regions[0], frame)) {
+                    if (!loopBody(op.regions[1], frame)) break;
+                    if (op.regions[2]) execRegion(op.regions[2], frame);
+                }
                 return;
             case 'wait.until':
                 while (!condition(op.regions[0], frame)) if (++steps > maxSteps) throw new StepLimitExceeded('wait.until never became true');

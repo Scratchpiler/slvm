@@ -176,7 +176,7 @@ export function parse(src) {
                 expect(')');
                 while (at('ident')) {
                     const flag = next().v;
-                    if (flag !== 'warp' && flag !== 'returns') throw new ParseError(`unknown proc flag \`${flag}\``, kw.line);
+                    if (!['warp', 'returns', 'extern'].includes(flag)) throw new ParseError(`unknown proc flag \`${flag}\``, kw.line);
                     proc[flag] = true;
                 }
                 proc.body = parseRegion();
@@ -184,6 +184,11 @@ export function parse(src) {
             } else if (kw.v === 'script') {
                 const hat = { event: expect('ident').v, arg: null };
                 if (at('str')) hat.arg = next().v;
+                if (at('num')) hat.value = next().v;
+                if (at('ident', 'with')) {
+                    next();
+                    hat.with = parseRegion();
+                }
                 target.scripts.push({ hat, body: parseRegion() });
             } else {
                 throw new ParseError(`unexpected \`${kw.v}\` in ${target.kind}`, kw.line);
@@ -219,7 +224,7 @@ export function print(mod) {
     const lines = [];
     const emit = (depth, text) => lines.push('  '.repeat(depth) + text);
 
-    function printRoot(header, body, depth) {
+    function printRoot(header, body, depth, hatRegion = null) {
         const names = new Map();
         const local = (id) => {
             if (!names.has(id)) names.set(id, `%${names.size}`);
@@ -254,7 +259,13 @@ export function print(mod) {
                 });
             }
         };
-        emit(depth, `${header} {`);
+        if (hatRegion) {
+            emit(depth, `${header} with {`);
+            printRegion(hatRegion, depth + 1);
+            emit(depth, '} {');
+        } else {
+            emit(depth, `${header} {`);
+        }
         printRegion(body, depth + 1);
         emit(depth, '}');
     }
@@ -265,13 +276,14 @@ export function print(mod) {
         for (const v of target.vars) emit(1, `${v.kind} ${sym('@', v.name)}${v.internal ? ' internal' : ''}`);
         for (const proc of target.procs) {
             lines.push('');
-            const flags = [proc.warp && 'warp', proc.returns && 'returns'].filter(Boolean);
+            const flags = [proc.warp && 'warp', proc.returns && 'returns', proc.extern && 'extern'].filter(Boolean);
             printRoot(`proc ${sym('@', proc.name)}(${proc.params.join(', ')})${flags.map((f) => ' ' + f).join('')}`, proc.body, 1);
         }
         for (const script of target.scripts) {
             lines.push('');
-            const { event, arg } = script.hat;
-            printRoot(`script ${event}${arg !== null ? ' ' + JSON.stringify(arg) : ''}`, script.body, 1);
+            const { event, arg, value } = script.hat;
+            const hatArgs = [arg !== null && JSON.stringify(arg), value !== undefined && String(value)].filter(Boolean);
+            printRoot(['script', event, ...hatArgs].join(' '), script.body, 1, script.hat.with ?? null);
         }
         emit(0, '}');
     });
