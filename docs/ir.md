@@ -6,47 +6,31 @@ Draft 4. This describes what `src/` implements today, plus the parts that are st
 
 ## Design in one paragraph
 
-Scratch has no jumps. Every control structure is a C-block nested inside another one, so control flow is **structured**: no `goto`, and no basic blocks joined by edges. A flat LLVM-style control-flow graph would need a relooper just to get back into C-blocks. Scratchpiler already runs into this: `lower.js` turns `break`/`continue` into flag variables by hand. So SLVM IR is closer to WebAssembly or MLIR's `scf` dialect than to LLVM: **ops contain nested regions**, values use **SSA form inside those regions**, and **Scratch variables are the memory**. SLVM has no `mem2reg` pass and never will, because in Scratch the variables *are* the registers.
+Scratch has no jumps. Every control structure is a C-block nested inside another one, so control flow is **structured**: no `goto`, and no basic blocks joined by edges. A flat LLVM-style control-flow graph would need a relooper just to get back into C-blocks. SLVM lowers `break`/`continue` into flag variables during legalization. So SLVM IR is closer to WebAssembly or MLIR's `scf` dialect than to LLVM: **ops contain nested regions**, values use **SSA form inside those regions**, and **Scratch variables are the memory**. SLVM has no `mem2reg` pass and never will, because in Scratch the variables *are* the registers.
 
 ---
 
 ## Where it sits in Scratchpiler
 
-Today (`scratchpiler/src/compiler.js:4003`, `compileSource`):
+Every Scratchpiler compile uses:
 
-```
-tokenize → parse → splice pointer helpers → lowerAST (lower.js) → compile(ast, vm) → prepareForScratchBlocks
-```
-
-`compile()` is ~2,300 lines that do three different jobs at once:
-
-1. **name resolution** against the live VM (`resolveVar`, `resolveBroadcast`)
-2. **desugaring** (`for`, `pyfor`, pointers, scratchroutines, enums, string interpolation)
-3. **block JSON emission** (`addBlock`, shadows, `inputs`/`fields` wiring)
-
-With the SLVM backend (opt-in, Settings → Compiler; `compileSource(..., { backend: 'slvm' })`):
-
-```
-tokenize → parse → irgen ──► SLVM passes ──► slc(ir, resolvers) → inject
-                   (2)       (legalize;       (3, plus 1 through resolver
-                              optimization     hooks wrapping the vm)
-                              later)
+```text
+include expansion → tokenize → parse → irgen → SLVM legalize → slc → inject
 ```
 
-irgen lives in Scratchpiler (`src/irgen.js`), and the glue that connects it to the live VM is in `src/slvm-backend.js`. Scratchpiler's `docs/slvm-backend.md` covers what changes for users, the little it still rejects, and how both backends are tested: in a real scratch-vm, and with a differential fuzzer checked against a reference interpreter for Scratchpiler source.
+IR generation lives in Scratchpiler's `src/irgen.js`; `src/slvm-backend.js` connects the module to live VM variables, broadcasts and external custom blocks. The former direct block emitter and `lower.js` have been removed. Scratchpiler's [compiler documentation](../../scratchpiler/docs/slvm-backend.md) describes behavior, restrictions and verification.
 
-| Today | With SLVM |
+| Source construct | Implementation |
 |---|---|
-| `lower.js` `lowerReturn` | `lower-ret`, with `spill` keeping a call result only when the next call would clobber it |
-| `lower.js` `lowerBreakContinue` | `lower-break` |
-| `lower.js` loop-condition rotation | `rotate-cond` (condition regions make the need explicit) |
-| `lower.js` ternary/call hoisting | gone: IR is already flat SSA |
-| `lower.js` `lowerMatch`, `lowerDoWhile` | expanded by irgen (pure sugar) |
-| pointer helpers + `promotedSlots` in `compile()` | irgen lowers pointers straight to `list.get`/`list.set`/`list.index` on `__heap`/`__ptab`. The VM glue promotes address-taken variables, the same way `compile()` does |
-| `compile()` `genExpr`/`genStmt` | `slc` (`src/slc/`): nearly 1:1, because IR ops are Scratch-shaped |
-| `asm-opcodes.js` | passed to `slc` as `opcodes`, so it describes the `sb` op's inputs and fields (slvm ships a small fallback table) |
-| linter "dead code after terminator" | a verifier rule |
-| decompiler | `lift` blocks → IR, then `raise` passes rebuild `for`/`pyfor` from `_scratchpiler_internal_*` patterns (**planned**) |
+| returning calls and `return` | `lower-ret`, with `spill` preserving values across calls |
+| `break` / `continue` | `lower-break` |
+| calls in loop conditions | `rotate-cond` |
+| ternaries | explicit IR regions and temporary values from irgen |
+| `match`, `do … while`, list sugar | expanded by irgen |
+| pointers | irgen emits `list.get` / `list.set` / `list.index` on `__heap` / `__ptab`; VM glue promotes global scalars |
+| motion, looks, sound, pen, sensing, assembly | `sb` operations; `slc` uses the supplied opcode schema |
+| block emission | `src/slc/`, with VM resolver hooks |
+| decompiler | Scratchpiler reads blocks directly; IR lifting remains **planned** |
 
 The IR does not depend on the VM. Variables and procs are referenced by name, and IDs are attached only in `emit`. That lets passes be tested in plain Node with text fixtures, without `tests/mock-vm.js`.
 
@@ -109,7 +93,7 @@ There are two types, and they mirror block shapes:
 
 The verifier enforces Scratch's one-way slot rule: a `bool` can go into a `val` slot, but a `val` cannot go into a boolean slot (`if`, `cond`, `and`, `or`, `not`).
 
-Source code does put round values in boolean slots (`if [flag] { }`). Scratch's VM accepts that and casts with its truthiness rules, and Scratchpiler's classic backend relies on it. For that case there is **`truthy %v`**, a `bool` op whose value is Scratch's `toBoolean(v)`. It has no block of its own: `slc` places `%v`'s reporter directly in the boolean slot. A `truthy` of a literal has no reporter to place, so `materialize-bool` replaces it with `"1" = "1"` or `"1" = "0"`.
+Source code does put round values in boolean slots (`if [flag] { }`). Scratch's VM accepts that and casts with its truthiness rules, and Scratchpiler source permits it. For that case there is **`truthy %v`**, a `bool` op whose value is Scratch's `toBoolean(v)`. It has no block of its own: `slc` places `%v`'s reporter directly in the boolean slot. A `truthy` of a literal has no reporter to place, so `materialize-bool` replaces it with `"1" = "1"` or `"1" = "0"`.
 
 ### Effects
 
@@ -172,9 +156,9 @@ The IR has two levels. `verify(mod)` checks **canonical** IR, which is what irge
 |---|---|---|
 | `ret x` | `lower-ret` | `var.set @__ret_<p>, x` + `stop "this script"`. A `stop` at the very end of a proc body is dropped |
 | `%r = call ...` | `lower-ret` | `call` + `%r = var.get @__ret_<p>`. Whether `%r` needs a temp is left to `spill` |
-| `break`, `continue` | `lower-break` | flag variables + guards, as in `lower.js`; see below |
+| `break`, `continue` | `lower-break` | flag variables + guards, using compiler flag variables; see below |
 | writes/calls in a condition region | `rotate-cond` | see below |
-| `true`/`false` in a boolean slot | `materialize-bool` | `eq "1", "1"` / `eq "1", "0"`, the same blocks `compile()` emits today |
+| `true`/`false` in a boolean slot | `materialize-bool` | `eq "1", "1"` / `eq "1", "0"`, Scratch-compatible comparison reporters |
 | a value that is not tree-safe | `spill` | see below |
 
 `lower-ptr` is still **planned**, because there are no `ptr.*` ops yet.
@@ -210,14 +194,14 @@ Scratch evaluates a reporter tree *at the moment its block runs*, so `emit` will
 3. **Anything else used more than once, or a single-use value that is clobbered**: store it in an internal temp right after its definition, and reload it right before each consumer. If the consumer is itself a value and the hazard comes later, the consumer is spilled instead, which keeps the reload next to where it is used.
 4. **The temp would be clobbered by recursion**: when a call between the store and the reload can reach the current proc, a plain temp would be overwritten by the inner activation. The value is pushed to the `_scratchpiler_internal_slvm_stack` list instead, and popped into a temp right before its use. Every `stop "this script"` in between gets a pop first, so early returns leave the stack balanced.
 
-With these rules, `return-functions.sl` needs one temp (`lower.js` makes three), and `loops.sl` needs none. `fib.sl` computes `fib(10) = 55` and finishes with an empty stack; `lower.js` reuses one `_rv` variable per call site at every recursion depth, so its output for `fib` gets this wrong.
+With these rules, `return-functions.sl` needs one temp and `loops.sl` needs none. `fib.sl` computes `fib(10) = 55` and finishes with an empty stack.
 
 Known limits, which raise `LegalizeError` instead of producing wrong code:
 - **Multiple uses across recursion:** a value used more than once across a recursive call. Only compiler temporaries hit this; variables in the source are ordinary Scratch variables.
 - **Stack values in loop conditions:** a stack-spilled value read inside a loop condition, which would need a stack peek.
 
 Not detected:
-- **Concurrent callers:** plain temps in a non-`warp` proc that yields between store and reload can be overwritten when another thread runs the same proc at the same time. The spill stack has the same problem. `lower.js`'s temps share this.
+- **Concurrent callers:** plain temps in a non-`warp` proc that yields between store and reload can be overwritten when another thread runs the same proc at the same time. The spill stack has the same problem.
 
 `verify(mod, { legal: true })` runs the same hazard search, so it reports any value that `emit` would evaluate at the wrong moment.
 
@@ -236,12 +220,12 @@ Not detected:
 
 ## slc: IR → Scratch blocks
 
-`slc(mod, options)` in `src/slc/` takes **legal** IR (it runs `verify(mod, { legal: true })` and throws `SlcError` otherwise). For each target it returns `{ kind, name, variables, blocks }`. `blocks` is a map in scratch-vm's in-memory format (`inputs: { NAME: { name, block, shadow } }`, `fields: { NAME: { name, value, id? } }`), the same format `compile()` returns and `injectBlocks` loads.
+`slc(mod, options)` in `src/slc/` takes **legal** IR (it runs `verify(mod, { legal: true })` and throws `SlcError` otherwise). For each target it returns `{ kind, name, variables, blocks }`. `blocks` is a map in scratch-vm's in-memory format (`inputs: { NAME: { name, block, shadow } }`, `fields: { NAME: { name, value, id? } }`), the format Scratchpiler returns and `injectBlocks` loads.
 
 - **Statements:** every op without a result becomes a block, chained with `next`/`parent`. Loop and `if` bodies become `SUBSTACK`/`SUBSTACK2`.
 - **Values:** a value op does not produce a block where it is defined. Its single consumer nests it as a reporter. `spill` has already made that safe.
 - **Slots:** number and text slots always get a `math_number`/`text` shadow, with the reporter on top when there is one. Boolean slots take the reporter with no shadow. A boolean literal is `1`/`0` in a number slot and `true`/`false` in a text slot, because Scratch casts `true` to `1` in arithmetic but would cast the text `"true"` to `0`.
-- **Procs:** the proccode is `name %s ...`, matching `compile()`. A parameter becomes `%b` with `argument_reporter_boolean` when the body reads it with `arg.b`. Calls and prototypes share argument ids. `warp` becomes the `warp` mutation.
+- **Procs:** the proccode is `name %s ...`, matching Scratchpiler source definitions. A parameter becomes `%b` with `argument_reporter_boolean` when the body reads it with `arg.b`. Calls and prototypes share argument ids. `warp` becomes the `warp` mutation.
 - **Variables and broadcasts:** every declaration gets an id from `resolveVariable(target, decl)`, or a fresh one. Broadcast messages (from `broadcast` ops and `receive` hats) become `broadcast_msg` variables on the stage, using `resolveBroadcast(name)`. Scratchpiler's `slvm-backend.js` passes resolvers that look names up in the live project, so the VM stays out of slvm.
 - **`sb` ops:** `options.opcodes` uses the `ASM_OPCODES` format from Scratchpiler's `asm-opcodes.js`. A key without a schema becomes a text input. Besides `number`/`string`/`boolean`/`menu`, a param can use `valueType: 'color'`, which gets a `colour_picker` shadow.
 - **Hats:** `greater "TIMER" 10` becomes `event_whengreaterthan` with a `math_number` `VALUE` input.
@@ -311,8 +295,14 @@ npm test
 
 ## Open questions
 
-- **Clones.** Sprite-local variables exist once per clone. Does a `clone` hat script need its own view of "internal" variables, or is per-clone storage already enough?
+- **Clones.** Internal loop and temporary variables live on the sprite, so each clone has its own copy. `control_delete_this_clone` can continue on an original sprite and is not an unconditional IR terminator.
 - **Scratchroutines.** Should they be lowered in irgen (to broadcast + hidden variables, as now), or kept as a `spawn @routine(args)` op so the event-graph analysis can see them?
 - **Source locations.** Ops keep `line` from the `.sl` text, but irgen doesn't attach `.sdsl` locations yet, so a `LegalizeError` is reported at line 1 of the source.
-- **Calls to custom blocks that aren't in the source.** The IR has no `extern proc`, so irgen can only call procs defined in the same compile. Classic Scratchpiler falls back to prototypes already in the project.
+- **External custom blocks.** `extern proc` signatures import existing project prototypes; the VM adapter resolves their actual proccodes and argument IDs.
 - **Pointers.** `ptr.load`/`ptr.store`/`addr` ops plus `lower-ptr`, or keep the `__heap` list explicit in irgen?
+
+## Verifier failures
+
+Duplicate target identities, duplicate variable declarations of the same kind, duplicate procedure names and duplicate parameters are rejected. A scalar and a list may share a name because Scratch distinguishes their types.
+
+`runPipeline` raises `VerificationError` when verification fails after a pass. Scratchpiler returns this as a compiler diagnostic. The block emitter can materialize literal boolean arguments in schema-defined boolean inputs and external procedure inputs; core boolean operands still pass through `materialize-bool`.

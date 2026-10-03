@@ -1,6 +1,6 @@
 export { parse, print, ParseError } from './text.js';
 export { verify } from './verify.js';
-export { runPipeline, PASSES, ALIASES } from './passes/index.js';
+export { runPipeline, PASSES, ALIASES, VerificationError } from './passes/index.js';
 export { LegalizeError } from './passes/spill.js';
 export { run, StepLimitExceeded } from './interp.js';
 export { OPS } from './ops.js';

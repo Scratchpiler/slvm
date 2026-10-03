@@ -8,6 +8,8 @@ import { spill } from './spill.js';
 import { verify } from '../verify.js';
 import { print } from '../text.js';
 
+export class VerificationError extends Error {}
+
 export const PASSES = {
     constfold,
     dce,
@@ -32,7 +34,7 @@ export function runPipeline(mod, names, { verifyEach = true, printAfterAll = nul
         if (printAfterAll) printAfterAll(`; *** IR after ${name} ***\n${print(mod)}`);
         if (verifyEach) {
             const errors = verify(mod);
-            if (errors.length) throw new Error(`IR invalid after ${name}:\n  ${errors.join('\n  ')}`);
+            if (errors.length) throw new VerificationError(`IR invalid after ${name}:\n  ${errors.join('\n  ')}`);
         }
     }
     return mod;

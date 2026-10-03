@@ -4,13 +4,13 @@
 
 It's a parody of [LLVM](https://llvm.org/). LLVM gives C, Rust and Swift a shared IR and a pile of optimization passes before they hit real hardware. SLVM gives a text DSL for a children's block-coding website the same treatment before it hits a JSON blob of colored puzzle pieces. We are aware of the proportions. We're doing it anyway.
 
-> **Status: draft 4.** There is a miniature IR with a text form, a verifier, `constfold`/`dce`, the full legalization pipeline (`-p legalize`), `slc` (blocks that run correctly in the real scratch-vm), two CLIs (`slopt`, `slc`) and a reference interpreter. Scratchpiler has an **opt-in SLVM backend** (Settings → Compiler) with irgen on its side. It compiles the whole language, including pointers, and on 10,400 randomly generated programs it matched an independent reference interpreter every time (the classic backend was wrong on 253). The IR is specified in [docs/ir.md](docs/ir.md), and planned optimizations are in [docs/optimizations.md](docs/optimizations.md). Anything marked *planned* there, or listed under [Planned](#planned) below, is intent rather than shipped behavior.
+> **Status: draft 4.** There is a miniature IR with a text form, a verifier, `constfold`/`dce`, the full legalization pipeline (`-p legalize`), `slc` (blocks that run correctly in the real scratch-vm), two CLIs (`slopt`, `slc`) and a reference interpreter. Scratchpiler uses SLVM for every compile, with IR generation on its side. Its direct compiler has been removed. Before the migration, 10,400 randomly generated programs matched an independent reference interpreter; the former direct compiler failed on 253. The IR is specified in [docs/ir.md](docs/ir.md), and planned optimizations are in [docs/optimizations.md](docs/optimizations.md). Anything marked *planned* there, or listed under [Planned](#planned) below, is intent rather than shipped behavior.
 
 ---
 
 ## Why
 
-Scratchpiler currently compiles in one pass: source → tokens → AST → Scratch blocks (`src/compiler.js`), with a desugaring step in `src/lower.js`. That works, but every optimization or lowering trick has to be welded straight into a ~2,000-line `compile()` function, where it lives next to code that emits opcodes.
+Scratchpiler compiles source through its frontend and IR generator, SLVM legalization, and the Scratch block emitter. Source handling lives in `src/compiler.js` and `src/irgen.js` in Scratchpiler; block emission lives in this repository's `src/slc/`.
 
 Scratch is also a strange target. There are no registers and no stack. Variables are global-ish name lookups, "functions" are custom blocks with their own screen-refresh semantics, and the cost model is *blocks executed per frame*, not cycles. That is exactly the kind of target where a proper IR with explicit passes pays off.
 

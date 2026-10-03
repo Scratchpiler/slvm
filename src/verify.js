@@ -5,7 +5,23 @@ import { findHazard, rootContext } from './passes/spill.js';
 export function verify(mod, { legal = false } = {}) {
     const errors = [];
 
+    const targetNames = new Set();
     for (const target of mod.targets) {
+        const targetName = `${target.kind}:${target.name ?? ''}`;
+        if (targetNames.has(targetName)) errors.push(`duplicate target ${targetName}`);
+        targetNames.add(targetName);
+        const variables = new Set();
+        for (const variable of target.vars) {
+            const key = `${variable.kind}:${variable.name}`;
+            if (variables.has(key)) errors.push(`duplicate ${variable.kind} @${variable.name}`);
+            variables.add(key);
+        }
+        const procedures = new Set();
+        for (const proc of target.procs) {
+            if (procedures.has(proc.name)) errors.push(`duplicate proc @${proc.name}`);
+            procedures.add(proc.name);
+            if (new Set(proc.params).size !== proc.params.length) errors.push(`proc @${proc.name}: duplicate parameter`);
+        }
         for (const proc of target.procs) {
             if (proc.extern && proc.body.length) errors.push(`proc @${proc.name}: an extern proc has no body`);
         }

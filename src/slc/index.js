@@ -1,3 +1,4 @@
+import { toBoolean } from '../cast.js';
 import { BLOCKS, HATS, DEFAULT_SB_SCHEMA } from './blocks.js';
 import { verify } from '../verify.js';
 import { walk, lookupVar } from '../ir.js';
@@ -91,6 +92,13 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
 
             const setInput = (block, name, kind, operand, menu) => {
                 if (kind === 'bool') {
+                    if (operand.lit !== undefined) {
+                        const reporter = add('operator_equals', block.id);
+                        setInput(reporter, 'OPERAND1', 'text', { lit: '1' });
+                        setInput(reporter, 'OPERAND2', 'text', { lit: toBoolean(operand.lit) ? '1' : '0' });
+                        block.inputs[name] = { name, block: reporter.id, shadow: null };
+                        return;
+                    }
                     if (operand.ref === undefined) throw new SlcError(`${block.opcode}.${name}: boolean slot needs a reporter`);
                     const def = defs.get(operand.ref);
                     const reporter = def.op === 'truthy' ? def.args[0] : operand;
