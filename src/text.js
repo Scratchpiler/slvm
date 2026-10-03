@@ -1,5 +1,6 @@
 import { OPS, REGION_KEYWORDS } from './ops.js';
 
+const PROC_FLAGS = ['warp', 'returns', 'extern', 'noinline'];
 const IDENT = /^[A-Za-z_][\w.]*/;
 const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/i;
 
@@ -135,11 +136,16 @@ export function parse(src) {
             }
             expect(')');
         } else {
-            while (!at('nl') && !at('{') && !at('}') && !at('eof')) {
+            while (!at('nl') && !at('{') && !at('}') && !at('eof') && !at('ident', 'nounroll')) {
                 op.args.push(parseOperand());
                 if (at(',')) next();
                 else break;
             }
+        }
+        if (at('ident', 'nounroll')) {
+            if (!OPS[name].unrollable) throw new ParseError(`\`${name}\` cannot take \`nounroll\``, line);
+            next();
+            op.nounroll = true;
         }
 
         const keywords = REGION_KEYWORDS[name] || [];
@@ -176,7 +182,7 @@ export function parse(src) {
                 expect(')');
                 while (at('ident')) {
                     const flag = next().v;
-                    if (!['warp', 'returns', 'extern'].includes(flag)) throw new ParseError(`unknown proc flag \`${flag}\``, kw.line);
+                    if (!PROC_FLAGS.includes(flag)) throw new ParseError(`unknown proc flag \`${flag}\``, kw.line);
                     proc[flag] = true;
                 }
                 proc.body = parseRegion();
@@ -246,6 +252,7 @@ export function print(mod) {
                 } else if (op.args.length) {
                     text += ' ' + op.args.map(operand).join(', ');
                 }
+                if (op.nounroll) text += ' nounroll';
                 if (!op.regions.length) {
                     emit(d, text);
                     continue;
@@ -276,7 +283,7 @@ export function print(mod) {
         for (const v of target.vars) emit(1, `${v.kind} ${sym('@', v.name)}${v.internal ? ' internal' : ''}`);
         for (const proc of target.procs) {
             lines.push('');
-            const flags = [proc.warp && 'warp', proc.returns && 'returns', proc.extern && 'extern'].filter(Boolean);
+            const flags = PROC_FLAGS.filter((flag) => proc[flag]);
             printRoot(`proc ${sym('@', proc.name)}(${proc.params.join(', ')})${flags.map((f) => ' ' + f).join('')}`, proc.body, 1);
         }
         for (const script of target.scripts) {

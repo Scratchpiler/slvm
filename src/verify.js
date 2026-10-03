@@ -87,6 +87,7 @@ export function verify(mod, { legal = false } = {}) {
                 if (!ctx.inLoop) fail(op, `\`${op.op}\` outside a loop`);
                 if (legal) fail(op, `\`${op.op}\` must be lowered (lower-break)`);
             }
+            if (op.nounroll && !spec.unrollable) fail(op, `\`${op.op}\` cannot take \`nounroll\``);
             if (op.op === 'cond' && !ctx.inCond) fail(op, '`cond` outside a condition region');
             if (op.op === 'value' && !ctx.inHat) fail(op, '`value` outside a hat region');
             if (legal && op.op === 'truthy' && op.args[0]?.lit !== undefined) fail(op, '`truthy` of a literal has no block form; materialize it first');

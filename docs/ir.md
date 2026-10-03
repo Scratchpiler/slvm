@@ -67,8 +67,14 @@ sprite "Cat" {                   ; one per sprite; names can be quoted
 - `@name` refers to a variable, list or proc. A variable reference looks in the sprite first, then the stage, the same way Scratch resolves names.
 - `internal` marks compiler-owned variables. **Writes to a non-internal variable are never dead**: stage monitors, other sprites, clones and cloud variables can all observe them.
 - `warp` means "run without screen refresh". `returns` means the proc can `ret` a value.
+- **`noinline`** tells the `inline` pass never to inline this proc. It does not change what the proc does.
 - An **`extern`** proc has a signature but no body: it already exists in the project as blocks. `slc` asks `resolveProc(target, proc)` for its real proccode and argument ids and emits only the calls. Its effects are unknown, so analysis assumes it may write anything, yield, and call back into any proc (which forces `spill` to use the stack across it). A call to an extern proc cannot use a return value.
 - A **hat region** (`with { … value %v }`) computes a hat's input as a reporter tree. It may only contain value ops that read or are pure, each used exactly once, and must end with `value`. `slc` nests the tree into the hat's `VALUE` input.
+
+### Loop hints and tags
+
+- **`nounroll`** follows the operands of a `repeat` or `until` op (`repeat 8 nounroll { … }`, `until nounroll { … } do { … }`) and tells the `unroll` pass to leave the loop alone. The verifier rejects it on any other op. `lower-break` and `rotate-cond` replace loops with new `until` ops, and they carry `nounroll` across.
+- **`tag`** is opaque client data on a proc, a script or a statement op. Passes never read it. `lower-break` and `rotate-cond` keep it on the loop they produce, and `slc` echoes it back as `{ blockId, tag }` entries in the target's `tags` list (see slc below). A tag on a value op is ignored, since a value op has no block of its own. Tags exist only as JavaScript values: the text format neither prints nor parses them.
 
 ## Values and operands
 
@@ -220,7 +226,7 @@ Not detected:
 
 ## slc: IR → Scratch blocks
 
-`slc(mod, options)` in `src/slc/` takes **legal** IR (it runs `verify(mod, { legal: true })` and throws `SlcError` otherwise). For each target it returns `{ kind, name, variables, blocks }`. `blocks` is a map in scratch-vm's in-memory format (`inputs: { NAME: { name, block, shadow } }`, `fields: { NAME: { name, value, id? } }`), the format Scratchpiler returns and `injectBlocks` loads.
+`slc(mod, options)` in `src/slc/` takes **legal** IR (it runs `verify(mod, { legal: true })` and throws `SlcError` otherwise). For each target it returns `{ kind, name, variables, blocks, tags }`. `blocks` is a map in scratch-vm's in-memory format (`inputs: { NAME: { name, block, shadow } }`, `fields: { NAME: { name, value, id? } }`), the format Scratchpiler returns and `injectBlocks` loads.
 
 - **Statements:** every op without a result becomes a block, chained with `next`/`parent`. Loop and `if` bodies become `SUBSTACK`/`SUBSTACK2`.
 - **Values:** a value op does not produce a block where it is defined. Its single consumer nests it as a reporter. `spill` has already made that safe.
@@ -229,6 +235,7 @@ Not detected:
 - **Variables and broadcasts:** every declaration gets an id from `resolveVariable(target, decl)`, or a fresh one. Broadcast messages (from `broadcast` ops and `receive` hats) become `broadcast_msg` variables on the stage, using `resolveBroadcast(name)`. Scratchpiler's `slvm-backend.js` passes resolvers that look names up in the live project, so the VM stays out of slvm.
 - **`sb` ops:** `options.opcodes` uses the `ASM_OPCODES` format from Scratchpiler's `asm-opcodes.js`. A key without a schema becomes a text input. Besides `number`/`string`/`boolean`/`menu`, a param can use `valueType: 'color'`, which gets a `colour_picker` shadow.
 - **Hats:** `greater "TIMER" 10` becomes `event_whengreaterthan` with a `math_number` `VALUE` input.
+- **Tags:** a proc's tag attaches to its `procedures_definition` block, a script's to its hat, and a statement's to the block `slc` emits for it. `tags` lists `{ blockId, tag }` in emission order. Scratchpiler uses them to attach comments to blocks without teaching slvm anything about comments.
 - **Block ids:** come from `options.uid`, by default a deterministic counter, so output can be compared in tests.
 
 `slc` is checked three ways in `test/slc.test.js`:
@@ -263,7 +270,8 @@ Results that are not finite (`div 1, 0`) are left for the runtime instead of bei
 | `dce` | done | removes unused `pure`/`read` ops until nothing changes; never removes writes |
 | `dse` | planned | dead stores, **only to `internal` variables** |
 | `licm` | planned | hoisting out of loops is only legal over pure ops, or over reads with no write/yield in the loop |
-| `inline` | planned | inline small procs; a `warp` callee inlined into a non-warp caller must keep its body atomic |
+| `inline` | done | inlines small non-recursive procs at call sites outside loop conditions; see [optimizations.md](optimizations.md#1-inlining-returning-procs-then-folding--o1); skips `noinline` procs; `-p O1` runs `inline`, `constfold`, `unroll`, `constfold`, `dce`, then `legalize` |
+| `unroll` | done | unrolls constant-count `repeat` loops and `for`-shaped `until` loops inside `warp` procs, within a trip and size budget; skips `nounroll` loops; never touches loops that yield today; see [optimizations.md](optimizations.md#1b-unrolling-counted-loops) |
 | `warp-infer` | planned | mark procs `warp` when that cannot change behavior (no yields, bounded loops, no visible effects mid-body) |
 | `event-graph` | planned analysis | broadcast → receivers, and the variable read/write sets for each script. It feeds yield-aware tree-safety and finds broadcast-as-goto chains like `spaghetti-goto.sdsl` (the thread model is in `scratchpiler/observations.md`) |
 | `lower-ret`, `lower-break`, `rotate-cond`, `materialize-bool`, `spill` | done | legalization, see above; `-p legalize` runs all of them in order |

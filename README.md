@@ -4,7 +4,7 @@
 
 It's a parody of [LLVM](https://llvm.org/). LLVM gives C, Rust and Swift a shared IR and a pile of optimization passes before they hit real hardware. SLVM gives a text DSL for a children's block-coding website the same treatment before it hits a JSON blob of colored puzzle pieces. We are aware of the proportions. We're doing it anyway.
 
-> **Status: draft 4.** There is a miniature IR with a text form, a verifier, `constfold`/`dce`, the full legalization pipeline (`-p legalize`), `slc` (blocks that run correctly in the real scratch-vm), two CLIs (`slopt`, `slc`) and a reference interpreter. Scratchpiler uses SLVM for every compile, with IR generation on its side. Its direct compiler has been removed. Before the migration, 10,400 randomly generated programs matched an independent reference interpreter; the former direct compiler failed on 253. The IR is specified in [docs/ir.md](docs/ir.md), and planned optimizations are in [docs/optimizations.md](docs/optimizations.md). Anything marked *planned* there, or listed under [Planned](#planned) below, is intent rather than shipped behavior.
+> **Status: draft 4.** There is a miniature IR with a text form, a verifier, `inline`/`unroll`/`constfold`/`dce` (`-p O1` runs them before legalization), the full legalization pipeline (`-p legalize`), `slc` (blocks that run correctly in the real scratch-vm), two CLIs (`slopt`, `slc`) and a reference interpreter. Scratchpiler uses SLVM for every compile, with IR generation on its side. Its direct compiler has been removed. Before the migration, 10,400 randomly generated programs matched an independent reference interpreter; the former direct compiler failed on 253. The IR is specified in [docs/ir.md](docs/ir.md), and planned optimizations are in [docs/optimizations.md](docs/optimizations.md). Anything marked *planned* there, or listed under [Planned](#planned) below, is intent rather than shipped behavior.
 
 ---
 
@@ -44,7 +44,7 @@ Unless marked *(draft)*, nothing below exists yet.
   - constant folding and propagation *(draft: `constfold`, using Scratch's casting rules)*
   - dead variable, dead store and unreachable-block elimination
   - loop-invariant code motion
-  - inlining small custom blocks (or marking them "run without screen refresh" when that's safe)
+  - inlining small custom blocks *(draft: `inline`, respecting `warp` atomicity and `noinline`)* (or marking them "run without screen refresh" when that's safe)
   - strength reduction and simplification of arithmetic that Scratch evaluates the slow way
   - block-count reduction, because every block in a script is a block someone has to scroll past
 - **A textual form of the IR** *(draft: `.sl`)*, so a pass's input and output can be printed and diffed, the way `.ll` files are.

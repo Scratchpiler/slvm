@@ -37,6 +37,11 @@ export function mkOp(op, args, { result = null, regions = [], ...rest } = {}) {
     return { op, result, args, regions, ...rest };
 }
 
+export const carried = (op) => ({
+    ...(op.nounroll && { nounroll: true }),
+    ...(op.tag !== undefined && { tag: op.tag }),
+});
+
 export function idGenerator(body) {
     const used = new Set();
     walk(body, (op) => { if (op.result !== null) used.add(op.result); });

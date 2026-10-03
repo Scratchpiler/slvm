@@ -1,5 +1,7 @@
 import { constfold } from './constfold.js';
 import { dce } from './dce.js';
+import { inline } from './inline.js';
+import { unroll } from './unroll.js';
 import { lowerRet } from './lower-ret.js';
 import { lowerBreak } from './lower-break.js';
 import { rotateCond } from './rotate-cond.js';
@@ -11,6 +13,8 @@ import { print } from '../text.js';
 export class VerificationError extends Error {}
 
 export const PASSES = {
+    inline,
+    unroll,
     constfold,
     dce,
     'lower-ret': lowerRet,
@@ -22,9 +26,10 @@ export const PASSES = {
 
 export const ALIASES = {
     legalize: ['lower-ret', 'lower-break', 'rotate-cond', 'materialize-bool', 'spill'],
+    O1: ['inline', 'constfold', 'unroll', 'constfold', 'dce', 'legalize'],
 };
 
-export const expandPipeline = (names) => names.flatMap((n) => ALIASES[n] ?? [n]);
+export const expandPipeline = (names) => names.flatMap((n) => (ALIASES[n] ? expandPipeline(ALIASES[n]) : [n]));
 
 export function runPipeline(mod, names, { verifyEach = true, printAfterAll = null } = {}) {
     for (const name of expandPipeline(names)) {

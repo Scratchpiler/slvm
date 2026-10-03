@@ -41,6 +41,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
             return { id, name: decl.name, type: VARIABLE_TYPES[decl.kind], internal: decl.internal };
         }),
         blocks: {},
+        tags: [],
     }));
     const stageOut = output.find((t) => t.kind === 'stage');
     const broadcastIds = new Map();
@@ -50,7 +51,8 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
     };
 
     mod.targets.forEach((target, ti) => {
-        const blocks = output[ti].blocks;
+        const { blocks, tags } = output[ti];
+        const tagBlock = (blockId, tag) => { if (tag !== undefined) tags.push({ blockId, tag }); };
         const isStage = target.kind === 'stage';
         const signatures = new Map(target.procs.map((proc) => {
             if (proc.extern) {
@@ -215,6 +217,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
                 for (const op of region) {
                     if (op.result !== null || op.op === 'cond') continue;
                     const block = emitStatement(op, prev ?? parent);
+                    tagBlock(block.id, op.tag);
                     if (prev) blocks[prev].next = block.id;
                     else first = block.id;
                     prev = block.id;
@@ -253,6 +256,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
             });
             def.inputs.custom_block = { name: 'custom_block', block: proto.id, shadow: proto.id };
             place(def);
+            tagBlock(def.id, proc.tag);
             def.next = emitRoot(proc.body, def.id);
         }
 
@@ -273,6 +277,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
                 hat.inputs[name] = { name, block: shadow.id, shadow: shadow.id };
             }
             place(hat);
+            tagBlock(hat.id, script.tag);
             hat.next = emitRoot(script.body, hat.id);
         }
     });

@@ -1,4 +1,4 @@
-import { roots, idGenerator, freshInternal, cloneRegion, mkOp, ref, sym, lit } from '../ir.js';
+import { roots, idGenerator, freshInternal, cloneRegion, mkOp, ref, sym, lit, carried } from '../ir.js';
 import { EFFECT_RANK, effectOf, isTerminator } from '../ops.js';
 
 const needsRotation = (condRegion) =>
@@ -26,7 +26,7 @@ function rotate(loop, ctx) {
     const recompute = store(cloneRegion(condRegion, gen));
     if (step) step.push(...recompute);
     else if (!(body.length && isTerminator(body.at(-1)))) body.push(...recompute);
-    return [...store(condRegion), mkOp('until', [], { regions: [test, body, ...(step ? [step] : [])] })];
+    return [...store(condRegion), mkOp('until', [], { regions: [test, body, ...(step ? [step] : [])], ...carried(loop) })];
 }
 
 function rotateRegion(region, ctx) {

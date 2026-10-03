@@ -45,21 +45,62 @@ The fuzzer is the single best investment. Every bug found while building legaliz
 
 ## 1. Inlining returning procs, then folding (`-O1`)
 
+**Done:** `src/passes/inline.js`, run by `-p inline` or as the first step of `-p O1` (see [Pipelines](#pipelines)).
+
 **The biggest structural win.** Every `define ... returns` call costs a `procedures_call`, a `var.set @__ret_f`, a `stop`, a `var.get @__ret_f`, and sometimes a spill. Inlining a small non-recursive returning proc into its caller removes all of that:
 
 ```
 %0 = call @rectArea(6, 7)        →        %0 = mul 6, 7        →        42
 ```
 
-**When it's legal:**
-- The callee is not recursive (`summarize` already computes `reaches`).
-- `ret` turns into structured control flow: a single `ret` at the end becomes the value. Early `ret`s become an `if`/`else` chain, or are left alone (don't inline).
-- `warp`: inlining a warp callee into a non-warp caller removes the callee's atomicity, so loops in the inlined body would now yield once per iteration. Only inline warp callees that have no loops and no yields.
-- Arguments: `arg n` becomes the caller's operand. Pure operands can be substituted directly. Reads need the same clobber check `spill` uses, because the callee's body could write what the argument reads before it is used.
+Procs are processed callees first, so a body is already inlined by the time its caller copies it. The definition always stays in the module.
+
+**What the pass inlines:** a call to a proc that
+
+- is not `extern`, not `noinline`, and not part of a recursive cycle (`summarize` computes `reaches`);
+- has at most `INLINE_LIMIT` ops (24) after its own calls were inlined;
+- contains no `forever` and no `stop` other than `stop "other scripts in sprite"`. A `stop "this script"` inside a proc returns from the proc, but inlined it would end the caller's script, and a terminator in the middle of the caller would leave dead code after it;
+- keeps its `warp` atomicity: a `warp` callee goes into a non-warp caller only if nothing in its body can yield there (no loops, no waits, no calls to non-warp procs). A non-`warp` callee can go anywhere, since a warp caller already ran it without yielding;
+- has `ret`s only in tail position. A `ret` inside an `if` that is followed by more ops is folded by moving the rest into the other arm (`if c { ret a } rest` becomes `if c { ret a } else { rest }`). A `ret` inside a loop, or one that cannot be folded, keeps the call;
+- returns a value on every path when the call's result is used. Falling off the end would read a stale `@__ret_f` in the original, which the inlined body cannot reproduce.
+
+**Where it does not look:** calls inside a loop condition region, and hat regions. A call whose result is unused is inlined without its return value.
+
+**How it substitutes:**
+
+- `arg p` becomes the caller's operand. SSA values are immutable, so a read passed as an argument keeps its old value even when the callee writes the same variable; `spill` then decides what needs a temporary, exactly as for any other value.
+- `arg.b p` becomes the operand itself when it is already a `bool`, and `truthy operand` otherwise, because `argument_reporter_boolean` casts with `toBoolean`.
+- A boolean literal passed to an `arg` becomes the text `"true"`/`"false"`, because a text parameter slot receives text in the real VM.
+- A single trailing `ret v` becomes the value `v`. Returns inside `if` arms store to a fresh internal `@_scratchpiler_internal_slvm_inlN` and read it once after the `if`.
+
+**Checked by:** `test/inline.test.js` runs each program before and after in the interpreter (eager, and tree mode after legalization), runs every example through the real scratch-vm after `O1`, and Scratchpiler's differential fuzzer runs with inlining on.
+
+**Not done yet:** inlining a proc with several non-foldable early returns, calls in loop conditions, and a size heuristic that weighs call count and callee size together.
+
+- `noinline`: a proc flag in the IR (`proc @f(x) noinline`). The pass skips a `noinline` proc even when it is small and non-recursive. Scratchpiler source spells it `define f(x) noinline { }`.
 
 After inlining, `constfold` + `dce` remove the leftovers, and `spill` usually has nothing left to do.
 
-**Evidence needed:** the fuzzer, and a dynamic block count drop on `return-functions.sl`. That example should shrink to a handful of blocks.
+**Result:** `return-functions.sl` loses all three `call`s from its script; after `O1` the first becomes `var.set @area, 42`.
+
+## 1b. Unrolling counted loops
+
+**Done:** `src/passes/unroll.js`, run by `-p unroll` or inside `-p O1` (`inline`, `constfold`, `unroll`, `constfold`, `dce`, `legalize`). Unrolling a loop removes the yield at its back-edge, so the pass only runs where that yield does not exist.
+
+**Where it runs:** only inside a `warp` proc. A warp loop never yields, so unrolling it changes nothing a script can observe. A loop in a script or a non-warp proc yields every iteration; other scripts can run in between, and a script that polls a variable the loop updates (`wait until [x] = 5`) would see different values once the yields are gone. The pass leaves those loops alone, whatever their body does. (Returning procs are `warp`, and inlining brings small warp bodies into warp callers, so this covers a good share of real loops.)
+
+**What it unrolls:**
+
+- `repeat n` with a literal `n`. The trip count is `round(n)`, as in Scratch, and a count of zero or less removes the loop.
+- The loop `irgen` emits for `for [i] from a to b`: `var.set @i, a`, then `until { i > b } do { … } step { var.change @i, 1 }`, with `a` and `b` integer literals and `@i` an `internal` variable that the body never writes. The trip count is `b - a + 1`, or zero. Reads of `@i` in the body become the literal for that iteration, so `constfold` can fold `i * 10` into a constant, and the initialization of `@i` is dropped because nothing can read it afterwards.
+
+**What it refuses:** a `nounroll` loop; more than 16 trips; a body that makes the unrolled code larger than 40 ops; a loop whose body contains `break` or `continue` for that loop (nested loops may use their own); a body that always ends the proc (`ret` as its last op); a `for` loop with non-literal or fractional bounds, a user-visible iterator, or a body that assigns the iterator.
+
+**Copies:** each copy is a fresh clone with new value names. Waits, calls and conditional `ret`s stay in every copy. Inner loops are unrolled first, so an outer loop is judged by its already-expanded size.
+
+**Checked by:** `test/unroll.test.js` (what unrolls, each refusal, and eager/tree equivalence), the generic example tests (`examples/unroll.sl` also runs in the real scratch-vm), and Scratchpiler's differential fuzzer with its `warpLoops` feature, which puts constant-count loops into warp and returning procs.
+
+**Not done:** unrolling in non-warp code (would need an explicit opt-in that accepts changed interleaving), partial unrolling of loops with a variable trip count, and unrolling `while`/`until` loops.
 
 ## 2. Copy propagation and dead stores on internal variables
 
@@ -112,7 +153,7 @@ These are standard in LLVM and mostly **unprofitable** here. Emitting values as 
 | Level | Passes |
 |---|---|
 | `-O0` | `legalize` |
-| `-O1` | `inline`, `constfold`, `dce`, copy propagation, `dse`, peepholes, then `legalize` |
+| `-O1` | `inline`, `constfold`, `unroll`, `constfold`, `dce`, then `legalize`; copy propagation, `dse` and peepholes are still planned |
 | `-O2` | `-O1` + loop outlining/`warp` (needs `--assume-no-races` until the event-graph analysis lands) |
 | `-Os` | `-O1` plus outlining repeated statement sequences into procs; trades dynamic blocks for fewer blocks to scroll past |
 

@@ -1,4 +1,4 @@
-import { roots, idGenerator, freshInternal, mkOp, ref, lit, sym } from '../ir.js';
+import { roots, idGenerator, freshInternal, mkOp, ref, lit, sym, carried } from '../ir.js';
 import { isTerminator } from '../ops.js';
 import { toNumber } from '../cast.js';
 
@@ -96,7 +96,7 @@ function lowerLoop(loop, ctx) {
         return either;
     };
     const until = (condOps, c, b) =>
-        mkOp('until', [], { regions: [[...condOps, mkOp('cond', [ref(c)])], b] });
+        mkOp('until', [], { regions: [[...condOps, mkOp('cond', [ref(c)])], b], ...carried(loop) });
 
     switch (loop.op) {
         case 'forever': {

@@ -56,9 +56,9 @@ export const OPS = {
     sb: { effect: null, type: null, arity: null },
 
     if: { effect: 'control', type: null, arity: 1, regions: [1, 2], boolArgs: [0] },
-    repeat: { effect: 'yield', type: null, arity: 1, regions: [1, 1], loop: true },
+    repeat: { effect: 'yield', type: null, arity: 1, regions: [1, 1], loop: true, unrollable: true },
     forever: { effect: 'yield', type: null, arity: 0, regions: [1, 1], loop: true, terminator: true },
-    until: { effect: 'yield', type: null, arity: 0, regions: [2, 3], loop: true, condRegion: 0, stepRegion: 2 },
+    until: { effect: 'yield', type: null, arity: 0, regions: [2, 3], loop: true, condRegion: 0, stepRegion: 2, unrollable: true },
     'wait.until': { effect: 'yield', type: null, arity: 0, regions: [1, 1], condRegion: 0 },
 
     cond: { effect: 'control', type: null, arity: 1, boolArgs: [0] },
