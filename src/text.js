@@ -1,6 +1,7 @@
 import { OPS, REGION_KEYWORDS } from './ops.js';
 
-const PROC_FLAGS = ['warp', 'returns', 'extern', 'noinline'];
+const PROC_FLAGS = ['warp', 'returns', 'extern', 'noinline', 'uninterrupted'];
+const VAR_FLAGS = ['internal', 'confined'];
 const IDENT = /^[A-Za-z_][\w.]*/;
 const NUMBER = /^-?(?:\d+\.?\d*|\.\d+)(?:e[+-]?\d+)?/i;
 
@@ -170,7 +171,7 @@ export function parse(src) {
             const kw = expect('ident');
             if (kw.v === 'var' || kw.v === 'list') {
                 const decl = { kind: kw.v, name: expect('global').v, internal: false };
-                if (at('ident', 'internal')) { next(); decl.internal = true; }
+                while (VAR_FLAGS.some((flag) => at('ident', flag))) decl[next().v] = true;
                 target.vars.push(decl);
             } else if (kw.v === 'proc') {
                 const proc = { name: expect('global').v, params: [], warp: false, returns: false };
@@ -191,11 +192,14 @@ export function parse(src) {
                 const hat = { event: expect('ident').v, arg: null };
                 if (at('str')) hat.arg = next().v;
                 if (at('num')) hat.value = next().v;
+                const script = { hat };
+                if (at('ident', 'uninterrupted')) { next(); script.uninterrupted = true; }
                 if (at('ident', 'with')) {
                     next();
                     hat.with = parseRegion();
                 }
-                target.scripts.push({ hat, body: parseRegion() });
+                script.body = parseRegion();
+                target.scripts.push(script);
             } else {
                 throw new ParseError(`unexpected \`${kw.v}\` in ${target.kind}`, kw.line);
             }
@@ -280,7 +284,7 @@ export function print(mod) {
     mod.targets.forEach((target, ti) => {
         if (ti > 0) lines.push('');
         emit(0, target.kind === 'stage' ? 'stage {' : `sprite ${JSON.stringify(target.name)} {`);
-        for (const v of target.vars) emit(1, `${v.kind} ${sym('@', v.name)}${v.internal ? ' internal' : ''}`);
+        for (const v of target.vars) emit(1, `${v.kind} ${sym('@', v.name)}${VAR_FLAGS.filter((flag) => v[flag]).map((f) => ' ' + f).join('')}`);
         for (const proc of target.procs) {
             lines.push('');
             const flags = PROC_FLAGS.filter((flag) => proc[flag]);
@@ -290,7 +294,7 @@ export function print(mod) {
             lines.push('');
             const { event, arg, value } = script.hat;
             const hatArgs = [arg !== null && JSON.stringify(arg), value !== undefined && String(value)].filter(Boolean);
-            printRoot(['script', event, ...hatArgs].join(' '), script.body, 1, script.hat.with ?? null);
+            printRoot(['script', event, ...hatArgs, script.uninterrupted && 'uninterrupted'].filter(Boolean).join(' '), script.body, 1, script.hat.with ?? null);
         }
         emit(0, '}');
     });

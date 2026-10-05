@@ -87,7 +87,9 @@ After inlining, `constfold` + `dce` remove the leftovers, and `spill` usually ha
 
 **Done:** `src/passes/unroll.js`, run by `-p unroll` or inside `-p O1` (`inline`, `constfold`, `unroll`, `constfold`, `dce`, `legalize`). Unrolling a loop removes the yield at its back-edge, so the pass only runs where that yield does not exist.
 
-**Where it runs:** only inside a `warp` proc. A warp loop never yields, so unrolling it changes nothing a script can observe. A loop in a script or a non-warp proc yields every iteration; other scripts can run in between, and a script that polls a variable the loop updates (`wait until [x] = 5`) would see different values once the yields are gone. The pass leaves those loops alone, whatever their body does. (Returning procs are `warp`, and inlining brings small warp bodies into warp callers, so this covers a good share of real loops.)
+**Where it runs:** inside a `warp` proc, and in `uninterrupted` code whose loop touches only `confined` state. A warp loop never yields, so unrolling it changes nothing a script can observe. A loop in a script or a non-warp proc yields every iteration; other scripts can run in between, and a script that polls a variable the loop updates (`wait until [x] = 5`) would see different values once the yields are gone. (Returning procs are `warp`, and inlining brings small warp bodies into warp callers, so this covers a good share of real loops.)
+
+**Outside `warp`** the pass needs two whole-program facts from the client (see `confined` and `uninterrupted` in `ir.md`). It unrolls a loop in an `uninterrupted` script or proc when every variable and list the body reads or writes is `confined` (a counted `for` also needs its internal iterator marked `confined`), and the body has no `sb`, `call`, `wait`, `wait.until`, `broadcast`, `broadcast.wait`, `stop` or monitor op. Then no other thread can see the intermediate values, and none can stop or restart the loop halfway. What does change is the scheduling: the loop finishes in one scheduler step instead of one per iteration, so the code after it runs earlier relative to other scripts. That is the trade-off section 4 describes, made with an analysis instead of a flag. Scratchpiler only supplies the facts when its project analysis covers every sprite and found no `__asm__`.
 
 **What it unrolls:**
 
@@ -100,7 +102,9 @@ After inlining, `constfold` + `dce` remove the leftovers, and `spill` usually ha
 
 **Checked by:** `test/unroll.test.js` (what unrolls, each refusal, and eager/tree equivalence), the generic example tests (`examples/unroll.sl` also runs in the real scratch-vm), and Scratchpiler's differential fuzzer with its `warpLoops` feature, which puts constant-count loops into warp and returning procs.
 
-**Not done:** unrolling in non-warp code (would need an explicit opt-in that accepts changed interleaving), partial unrolling of loops with a variable trip count, and unrolling `while`/`until` loops.
+**Checked by (non-warp):** `test/confinement.test.js`, and Scratchpiler's `tests/project-compile.test.js`, which compiles programs with facts from a real project analysis and runs them in scratch-vm.
+
+**Not done:** partial unrolling of loops with a variable trip count, and unrolling `while`/`until` loops.
 
 ## 2. Copy propagation and dead stores on internal variables
 
@@ -135,12 +139,14 @@ Because the last condition is hard to prove, this belongs behind an explicit fla
 
 ## 5. Event-graph analysis
 
+**Partly done, in Scratchpiler** (`src/project-analysis.js`), because it needs every sprite's source and SLVM only sees one sprite at a time. It reaches SLVM as the `confined` and `uninterrupted` attributes, which the unroller and `spill` use. The broadcast-as-goto lint below is still open.
+
 A module-level analysis: which broadcasts start which scripts; which variables each script reads and writes, and where it yields; how clones affect sprite-local state. This analysis:
 
 - provides the race checks that `-O2` needs;
-- makes `spill`'s yield rule more precise: a read of a user variable only needs spilling across a yield if some *other* script writes that variable;
+- makes `spill`'s yield rule more precise: a read of a user variable only needs spilling across a yield if some *other* script writes that variable (**done** for `confined` variables);
 - detects broadcast-as-goto chains like `spaghetti-goto.sdsl`, where the only receiver of `broadcast X` is a script whose last op broadcasts again. These could become a loop, but that changes thread identity and timing, so it should be reported as a lint rather than rewritten;
-- finds scripts that can never start (a `receive` hat that nothing broadcasts), for a dead-script lint.
+- finds scripts that can never start (a `receive` hat that nothing broadcasts), for a dead-script lint (**done**, as a Scratchpiler editor check).
 
 ## 6. Low priority: CSE, GVN, LICM
 

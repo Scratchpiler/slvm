@@ -47,6 +47,7 @@ stage {                          ; globals: stage variables are visible to every
 sprite "Cat" {                   ; one per sprite; names can be quoted
   var @vx                        ; sprite-local ("for this sprite only")
   var @_tmp internal             ; compiler-owned: passes may delete, rename or spill into it
+  var @steps confined            ; only one thread ever touches it (a whole-program fact)
 
   proc @jump(height) warp returns {
     ...
@@ -56,6 +57,7 @@ sprite "Cat" {                   ; one per sprite; names can be quoted
   }
 
   script flag { ... }            ; hats: flag, clicked, clone, receive "msg", key "space", backdrop "name", greater "TIMER" 10
+  script receive "go" uninterrupted { ... }   ; no other thread can stop or restart it
 
   script greater "TIMER" with {  ; a hat region: the threshold as a reporter
     %0 = var.get @limit
@@ -66,6 +68,8 @@ sprite "Cat" {                   ; one per sprite; names can be quoted
 
 - `@name` refers to a variable, list or proc. A variable reference looks in the sprite first, then the stage, the same way Scratch resolves names.
 - `internal` marks compiler-owned variables. **Writes to a non-internal variable are never dead**: stage monitors, other sprites, clones and cloud variables can all observe them.
+- **`confined`** says that only one thread ever reads or writes the variable. SLVM cannot check this: it is a whole-program fact that the client supplies (Scratchpiler derives it from its project analysis, see `docs/code-intelligence.md` there). A sprite-local variable counts as one per clone, because every clone has its own copy. A yield cannot change a confined variable, so `spill` treats it like an internal one, and the unroller may unroll loops over it outside `warp` (below).
+- **`uninterrupted`** on a script or proc says that the code runs in one thread only, and that no other thread can stop or restart that thread: nothing else broadcasts its message or switches to its backdrop, and nothing runs `stop all`, `stop other scripts in sprite` or `delete this clone` around it. User input (green flag, keys, clicks) still can, but it only arrives between frames, as it does on a slower or faster computer. This is also a client-supplied fact.
 - `warp` means "run without screen refresh". `returns` means the proc can `ret` a value.
 - **`noinline`** tells the `inline` pass never to inline this proc. It does not change what the proc does.
 - An **`extern`** proc has a signature but no body: it already exists in the project as blocks. `slc` asks `resolveProc(target, proc)` for its real proccode and argument ids and emits only the calls. Its effects are unknown, so analysis assumes it may write anything, yield, and call back into any proc (which forces `spill` to use the stack across it). A call to an extern proc cannot use a return value.
@@ -190,7 +194,7 @@ When a condition region contains an op that writes or yields (in practice, a `ca
 Scratch evaluates a reporter tree *at the moment its block runs*, so `emit` will nest every value into its single consumer. A value's **evaluation point** is the first op up its consumer chain that has no result: the statement whose block will run the tree. A value is **clobbered** when, somewhere between its definition and that point, in execution order:
 
 - an op writes state it reads (`var:x`, `list:l`, `world` for sensing/motion, or anything for a `call`, using per-proc write summaries that are closed over the call graph), or
-- something yields and the value reads non-internal state (other scripts run at a yield), or
+- something yields and the value reads state that is neither internal nor `confined` (other scripts run at a yield), or
 - the interval contains a loop, the value is defined outside it and used inside, and the loop yields at its back-edge (any loop outside a `warp` proc).
 
 `spill` repeats the following until no hazard is left:

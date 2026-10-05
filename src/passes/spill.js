@@ -59,7 +59,8 @@ function deep(ops, fn) {
 function isVolatile(key, ctx) {
     if (key === ANYTHING || key === WORLD) return true;
     const [kind, name] = [key.slice(0, key.indexOf(':')), key.slice(key.indexOf(':') + 1)];
-    return !lookupVar(ctx.mod, ctx.target, name, kind)?.internal;
+    const decl = lookupVar(ctx.mod, ctx.target, name, kind);
+    return !decl?.internal && !decl?.confined;
 }
 
 function clobbered(def, point, where, ctx) {

@@ -24,6 +24,19 @@ const writesVariable = (region, name) => {
 
 const isInteger = (operand) => typeof operand.lit === 'number' && Number.isInteger(operand.lit);
 
+const INTERFERING_OPS = new Set(['sb', 'call', 'broadcast', 'broadcast.wait', 'wait', 'wait.until', 'stop', 'var.show', 'var.hide', 'list.show', 'list.hide']);
+
+function touchesOnlyConfinedState(region, ctx) {
+    let isolated = true;
+    walk(region, (op) => {
+        if (!isolated) return;
+        if (INTERFERING_OPS.has(op.op)) isolated = false;
+        const kind = OPS[op.op].operands?.[0];
+        if ((kind === 'var' || kind === 'list') && !lookupVar(ctx.mod, ctx.target, op.args[0].sym, kind)?.confined) isolated = false;
+    });
+    return isolated;
+}
+
 function repeatPlan(op) {
     const [count] = op.args;
     if (op.op !== 'repeat' || count.lit === undefined) return null;
@@ -41,7 +54,8 @@ function countedForPlan(op, previous, ctx) {
     if (left.ref !== read.result || !isInteger(end) || test.args[0].ref !== compare.result) return null;
     if (step.length !== 1 || step[0].op !== 'var.change' || step[0].args[0].sym !== iterator || step[0].args[1].lit !== 1) return null;
     if (previous?.op !== 'var.set' || previous.args[0].sym !== iterator || !isInteger(previous.args[1])) return null;
-    if (!lookupVar(ctx.mod, ctx.target, iterator, 'var')?.internal || writesVariable(body, iterator)) return null;
+    const iteratorDecl = lookupVar(ctx.mod, ctx.target, iterator, 'var');
+    if (!iteratorDecl?.internal || (!ctx.warp && !iteratorDecl.confined) || writesVariable(body, iterator)) return null;
     const start = previous.args[1].lit;
     return { trips: Math.max(0, end.lit - start + 1), body, iterator, start, dropsInitialization: true };
 }
@@ -52,6 +66,7 @@ function planFor(op, previous, ctx) {
     if (!plan || plan.trips > UNROLL_MAX_TRIPS) return null;
     if (plan.trips === 0 || plan.body.length === 0) return plan;
     if (leavesLoop(plan.body) || isTerminator(plan.body.at(-1))) return null;
+    if (!ctx.warp && !touchesOnlyConfinedState(plan.body, ctx)) return null;
     return plan.trips * sizeOf(plan.body) <= UNROLL_BUDGET ? plan : null;
 }
 
@@ -91,8 +106,12 @@ function unrollRegion(region, ctx) {
 export function unroll(mod) {
     for (const target of mod.targets) {
         for (const proc of target.procs) {
-            if (proc.extern || !proc.warp) continue;
-            proc.body = unrollRegion(proc.body, { mod, target, gen: idGenerator(proc.body) });
+            if (proc.extern || (!proc.warp && !proc.uninterrupted)) continue;
+            proc.body = unrollRegion(proc.body, { mod, target, warp: !!proc.warp, gen: idGenerator(proc.body) });
+        }
+        for (const script of target.scripts) {
+            if (!script.uninterrupted) continue;
+            script.body = unrollRegion(script.body, { mod, target, warp: false, gen: idGenerator(script.body) });
         }
     }
     return mod;
