@@ -1,6 +1,7 @@
 import { walk, idGenerator, cloneRegion, lookupVar, lit } from '../ir.js';
 import { OPS, isTerminator } from '../ops.js';
 import { toNumber } from '../cast.js';
+import { summarize, isIsolatedCall } from './effects.js';
 
 export const UNROLL_MAX_TRIPS = 16;
 export const UNROLL_BUDGET = 40;
@@ -24,13 +25,13 @@ const writesVariable = (region, name) => {
 
 const isInteger = (operand) => typeof operand.lit === 'number' && Number.isInteger(operand.lit);
 
-const INTERFERING_OPS = new Set(['sb', 'call', 'broadcast', 'broadcast.wait', 'wait', 'wait.until', 'stop', 'var.show', 'var.hide', 'list.show', 'list.hide']);
+const INTERFERING_OPS = new Set(['sb', 'broadcast', 'broadcast.wait', 'wait', 'wait.until', 'stop', 'var.show', 'var.hide', 'list.show', 'list.hide']);
 
 function touchesOnlyConfinedState(region, ctx) {
     let isolated = true;
     walk(region, (op) => {
         if (!isolated) return;
-        if (INTERFERING_OPS.has(op.op)) isolated = false;
+        if (INTERFERING_OPS.has(op.op) || (op.op === 'call' && !isIsolatedCall(op, ctx))) isolated = false;
         const kind = OPS[op.op].operands?.[0];
         if ((kind === 'var' || kind === 'list') && !lookupVar(ctx.mod, ctx.target, op.args[0].sym, kind)?.confined) isolated = false;
     });
@@ -105,13 +106,14 @@ function unrollRegion(region, ctx) {
 
 export function unroll(mod) {
     for (const target of mod.targets) {
+        const summaries = summarize(target);
         for (const proc of target.procs) {
             if (proc.extern || (!proc.warp && !proc.uninterrupted)) continue;
-            proc.body = unrollRegion(proc.body, { mod, target, warp: !!proc.warp, gen: idGenerator(proc.body) });
+            proc.body = unrollRegion(proc.body, { mod, target, summaries, warp: !!proc.warp, gen: idGenerator(proc.body) });
         }
         for (const script of target.scripts) {
             if (!script.uninterrupted) continue;
-            script.body = unrollRegion(script.body, { mod, target, warp: false, gen: idGenerator(script.body) });
+            script.body = unrollRegion(script.body, { mod, target, summaries, warp: false, gen: idGenerator(script.body) });
         }
     }
     return mod;

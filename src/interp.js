@@ -21,6 +21,7 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
     const trace = [];
     const rand = lcg(seed);
     let steps = 0;
+    let blocks = 0;
 
     const decl = (frame, name, kind) => {
         const d = lookupVar(mod, frame.target, name, kind);
@@ -42,6 +43,7 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
     }
 
     function evaluate(op, frame) {
+        blocks++;
         const v = (i) => value(op.args[i], frame);
         if (op.op in EVAL) return EVAL[op.op](...op.args.map((_, i) => v(i)));
         switch (op.op) {
@@ -108,6 +110,7 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
         const v = (i) => value(op.args[i], frame);
         const name = op.args[0]?.sym;
 
+        if (op.result === null && op.op !== 'cond') blocks++;
         if (op.result !== null) {
             if (tree && op.op !== 'call') frame.defs.set(op.result, op);
             else frame.values.set(op.result, evaluate(op, frame));
@@ -203,5 +206,5 @@ export function run(mod, { event = 'flag', tree = false, maxSteps = 1e6, seed = 
     const vars = {};
     const lists = {};
     for (const [d, val] of store) (d.kind === 'list' ? lists : vars)[d.name] = val;
-    return { vars, lists, trace };
+    return { vars, lists, trace, blocks };
 }

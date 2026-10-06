@@ -35,7 +35,7 @@ Today's numbers after `-p legalize` + `slc` (all blocks / non-shadow blocks):
 
 Before any new optimization:
 
-- **`slc --stats`**: static block counts, plus dynamic counts from the interpreter in tree mode (count every op it evaluates). That is exactly the number of blocks scratch-vm would dispatch.
+- **`slc --stats`**: static block counts, plus dynamic counts from the interpreter in tree mode (count every op it evaluates). That is exactly the number of blocks scratch-vm would dispatch. **Partly done:** `run()` in `src/interp.js` now returns `blocks`, the number of statements executed plus value ops evaluated (a `cond` is not counted, and a loop counts once per entry, not per iteration). In tree mode this is the dispatch count of the legalized program. There is no `--stats` flag yet.
 - **Frames with a redraw model**: `test/scratch-vm.js` currently has no renderer, so nothing ever requests a redraw. A stub that calls `runtime.requestRedraw()` from the blocks that would draw (motion, looks, pen) would make the frame counts realistic.
 - **A random program generator.** Structured IR is easy to generate: nested `if`/`repeat`/`until`, arithmetic on a few variables, procs with `ret`, `break`/`continue`, recursion with bounded depth. Every generated program runs through every pipeline (`legalize`, and `O1`/`O2` once those exist), and three results must agree: the interpreter in eager mode before, the interpreter in tree mode after, and the real scratch-vm after.
 
@@ -106,9 +106,76 @@ After inlining, `constfold` + `dce` remove the leftovers, and `spill` usually ha
 
 **Not done:** partial unrolling of loops with a variable trip count, and unrolling `while`/`until` loops.
 
-## 2. Copy propagation and dead stores on internal variables
+## 1c. Effect summaries and unused calls
+
+**Done:** `summarize` in `src/passes/effects.js`; consumers are `dce` and `unroll`.
+
+`call` is typed `yield` in the op table, which is the worst case, so a call could never be deleted or moved. `summarize(target)` now computes per proc (and closes over everything the proc can reach):
+
+| Field | Meaning |
+|---|---|
+| `writes`, `reads` | variable and list keys (`var:x`, `list:l`), `world` for `sb`, and `*` for an extern proc. `reads` is new. |
+| `explicitYield` | contains `wait`, `broadcast.wait`, `sb` yielders (and so on); not counting loops or calls |
+| `world` | contains `sb`, `broadcast`, `wait`, a monitor op or a `stop` other than `stop "this script"`: anything observable beyond variables and lists |
+| `diverges` | contains `forever`, `until` or `wait.until`, or is recursive. (`repeat` always ends.) |
+
+Two things use them today:
+
+- **`dce` deletes an unused call** when the callee is *discardable*: not extern, no writes, no `world`, no explicit yield, does not diverge, and the call itself does not yield in this context (the callee is `warp`, or the caller is). Reads are fine, since nothing can observe a read. A returning proc whose result nobody uses, such as `set [x] to f(2)` after `x` was overwritten, disappears with its whole body of work. This relies on `ret` still being a `ret`: after `lower-ret` the callee writes its `@__ret_f` variable and is no longer discardable, so run `dce` before `legalize` (`-O1` does).
+- **`unroll` accepts calls** in the body of a loop it unrolls outside `warp`: the callee must be `warp` (so the call does not yield), have no explicit yield and no `world`, and read and write only `confined` variables and lists. Before this, any `call` made the loop ineligible.
+
+**Not done:** treating a discardable call as `pure`/`read` in `spill` and CSE, hoisting a pure call out of a loop, and reporting the summaries from `slopt` for debugging.
+
+## 1d. Counted `for` → `repeat` (`indvars`)
+
+**Done:** `src/passes/indvars.js`, run by `-p indvars` or inside `-p O1`, before `unroll`.
+
+`irgen` emits `for [i] from a to b` as `var.set @i, a` followed by `until { i > b } do { … } step { change @i, 1 }`. Each iteration then pays for a `var.get`, a `gt` and a `var.change` that a `repeat` does not need. When nothing reads `@i`, the loop becomes `repeat (b - a + 1)`:
+
+```
+var.set @i, 1                           %n = list.len @items
+until { gt (var.get @i), %n } do {  →   repeat %n {
+  …                                       …
+} step { change @i, 1 }                 }
+```
+
+It applies when:
+
+- the iterator is `internal`, is read nowhere in the module except the loop's own condition, and the body never writes it;
+- the start and the end are **provably finite integers**: integer literals, `list.len`, `length`, `list.index`, and `add`/`sub` of those. This is deliberately narrow. `i > b` compares as text when `b` is not numeric (`"abc"`, `""`), while `repeat` would run zero times, so the rewrite is only sound when `b` cannot be such a value. A `var.get` or an argument is not known to be numeric, so `for [i] from 1 to [n]` is **not** converted. That is what a kind lattice (known number / known integer) would unlock, see below;
+- the end is invariant: the ops computing it only read, nothing in the body or the callees writes what they read, and if they read shared state the loop cannot yield (a `warp` context with no waits or yielding calls). A `list.len` of a `confined` list is fine anywhere.
+
+The count is built from the pieces: `from` and `to` literal gives a literal, `to = len - 1` from `0` gives `repeat len` (the offsets are folded exactly, since both sides are integers), otherwise one `add` or `sub`. `break` and `continue` mean the same in the `repeat`. `nounroll` and the metadata tag follow the loop.
+
+**Checked by:** `test/indvars.test.js` (conversion, every refusal, trip counts including empty and negative ranges, nested loops, `break`/`continue`, equivalence in eager and tree mode) and the differential fuzzer.
+
+**Measured:** a 100-iteration counted loop plus a list-length loop go from 430 to 110 dynamic blocks (`-O1` before and after). Counted loops whose iterator is used in the body, the common case, are unchanged.
+
+## 2. Copy propagation and dead stores
+
+**Partly done:** `src/passes/dse.js` (`-p dse`, inside `-O1` after `unroll`) and `src/passes/dead-vars.js` (`-p dead-vars`, opt-in).
 
 Legalization leaves predictable residue: `var.set @t, x` followed by a single `var.get @t`, flag variables that are set and never read on some path, `__ret` writes whose only reader was inlined away.
+
+### What `dse` does
+
+`dse` scans each region as straight-line code, remembering the last pending store to each variable. This is where the roadmap's "writes to user variables are never dead" was too strict: between two stores to a variable, with no read of it and no yield, no other script and no monitor redraw can observe the first one, so it is dead **even for a shared user variable**. Inside one span:
+
+| Pattern | Result |
+|---|---|
+| `set x, a; set x, b` | `set x, b` |
+| `set x, 1; change x, 2` | `set x, 3`, computed with the same cast and addition as the VM |
+| `change x, %v; set x, 9` | both deleted, because the `change` only fed the overwritten store |
+| `set x, 5; %t = get x` | `%t` becomes the literal `5`, and `constfold` rules apply immediately (the pass runs `foldValue` as it substitutes) |
+| `change x, 1; change x, 1` | **kept.** `(x+1)+1` and `x+2` differ in the last bit for some fractional or huge `x`. Merging needs `x` known to be a small integer |
+
+A span ends, and the pending stores survive, at: a read of that variable that cannot be resolved; any op with regions (`if`, loops); a `call` whose callee reads or writes the variable, does something to the `world` or is extern; a `sb` or other op that may end the script (`delete this clone`, `stop`) or observe state (`sensing_of` can read another sprite's variable). A `call` or `wait` that yields ends the span for variables that are not `internal` or `confined`. The `cloud` flag does not exist in the IR, so a cloud variable's intermediate update is dropped as well, which the cloud server cannot tell apart from rate limiting.
+
+**Not done:** forwarding a non-literal stored value (extending an SSA value's lifetime is a tree-safety question for `spill`), spans through `if` arms that do not touch the variable, and the flag folding after `lower-break`.
+
+### `dead-vars`
+
+Deletes `set`/`change` on an `internal` variable and `list.add`/`del`/`ins`/`set`/`clear` on an `internal` list that nothing in the module reads (no `get`, `len`, `list.contents`, monitor op, or hat region). **Opt-in**, not part of `-O1`: the only thing it finds before legalization is a hidden `pyfor` item that the body ignores, and removing that store makes Pull from Scratch show a counted `for` instead of `pyfor`, because the decompiler recognizes the loop by that store. It is worth turning on after `legalize` for `__ret_f` variables whose callers were inlined, once the decompiler question is settled.
 
 - **Store-to-load forwarding:** replace `var.get @t` with the stored value when the clobber check passes over the interval between them. This is the same machinery as `spill`, run in reverse.
 - **`dse`:** delete a `var.set` to an `internal` variable that no later read can observe. **Never** for user variables: monitors, other sprites, clones and cloud variables can all see them.
@@ -124,6 +191,7 @@ Small rewrites that know Scratch better than a generic optimizer would:
 | `eq (var.get @f), "true"` for `rotate-cond` flags | store `1`/`0` and test `= 1` | no string comparison |
 | `not (lt a, b)` from `repeat` → `until` | `gt` plus an off-by-one adjustment, only when `b` is known to be an integer | one fewer block per iteration |
 | `join a, ""` | `a`, only in text slots | `join` always produces a string; a number slot would see a number instead |
+| `join "a", (join "b", x)` and `join (join x, "a"), "b"` | `join "ab", x` | **done** in `constfold`. String concatenation is associative and `join` casts both sides to text, so this is exact. It halves the blocks of an interpolated string once a variable's value was forwarded. The inner `join` stays if something else uses it |
 
 Each peephole needs a Scratch-semantics proof, written next to it in `cast.js` terms.
 
@@ -159,8 +227,15 @@ These are standard in LLVM and mostly **unprofitable** here. Emitting values as 
 | Level | Passes |
 |---|---|
 | `-O0` | `legalize` |
-| `-O1` | `inline`, `constfold`, `unroll`, `constfold`, `dce`, then `legalize`; copy propagation, `dse` and peepholes are still planned |
+| `-O1` | `inline`, `constfold`, `indvars`, `unroll`, `constfold`, `dse`, `constfold`, `dce`, then `legalize`; non-literal forwarding and the remaining peepholes are still planned |
 | `-O2` | `-O1` + loop outlining/`warp` (needs `--assume-no-races` until the event-graph analysis lands) |
 | `-Os` | `-O1` plus outlining repeated statement sequences into procs; trades dynamic blocks for fewer blocks to scroll past |
 
 Every level reruns `verify` after each pass (already the default in `runPipeline`), and every new pass gets a fuzzer run that compares against the real scratch-vm before it is turned on by default.
+
+**What `indvars`, `dse` and the effect summaries bought on the fuzzer** (3,000 programs, same seeds, blocks emitted by Scratchpiler's `-O1`): 1,031,954 → 977,411 (-5.3%); with `warpLoops` 916,698 → 874,653 (-4.6%); with `warpLoops` and project facts 908,695 → 872,707 (-4.0%). 12,000 programs across these configurations matched the source oracle with no mismatches. The fuzzer's loops mostly use their iterator, so the loop conversion contributes little there; most of it is `dse` and join merging.
+
+## Next
+
+- **A value-kind lattice** (known number, known integer, known non-negative, known bool). It is the missing piece for `for [i] from 1 to [n]`, for `x + 0` and `x * 1`, for merging `change x, 1; change x, 1`, and for `not (lt a b)` → `gt`. The rule that makes it sound: results of arithmetic ops are numbers but can be `NaN` or `Infinity`, which compare as text; only `round`, `length`, `list.len`, `list.index` and integer literals are known finite.
+- Tail recursion to a loop, break-to-condition fusion, spill coalescing, and dead-argument elimination, in roughly that order.

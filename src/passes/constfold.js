@@ -5,8 +5,25 @@ import { roots } from '../ir.js';
 const isLit = (a) => a.lit !== undefined;
 const lit = (v) => ({ lit: v });
 
-function foldValue(op, defs) {
+function mergeJoinLiterals(op, defs) {
+    for (let merged = true; merged;) {
+        merged = false;
+        const [a, b] = op.args;
+        const right = b.ref !== undefined ? defs.get(b.ref) : undefined;
+        const left = a.ref !== undefined ? defs.get(a.ref) : undefined;
+        if (isLit(a) && right?.op === 'join' && isLit(right.args[0])) {
+            op.args = [lit(EVAL.join(a.lit, right.args[0].lit)), right.args[1]];
+            merged = true;
+        } else if (isLit(b) && left?.op === 'join' && isLit(left.args[1])) {
+            op.args = [left.args[0], lit(EVAL.join(left.args[1].lit, b.lit))];
+            merged = true;
+        }
+    }
+}
+
+export function foldValue(op, defs) {
     if (!(op.op in EVAL) || OPS[op.op].effect !== 'pure') return undefined;
+    if (op.op === 'join') mergeJoinLiterals(op, defs);
     const [a, b] = op.args;
     if (op.args.every(isLit)) {
         const v = EVAL[op.op](...op.args.map((x) => x.lit));

@@ -270,11 +270,13 @@ Results that are not finite (`div 1, 0`) are left for the runtime instead of bei
 
 | Pass | Status | Does |
 |---|---|---|
-| `constfold` | done | folds pure ops with Scratch semantics; boolean identities and `not not`; folds `if` with a constant condition, `repeat` ≤ 0 and `until`/`wait.until` that are already true; drops code after a terminator it exposes |
-| `dce` | done | removes unused `pure`/`read` ops until nothing changes; never removes writes |
-| `dse` | planned | dead stores, **only to `internal` variables** |
+| `constfold` | done | folds pure ops with Scratch semantics; boolean identities and `not not`; merges adjacent literals in nested `join`s; folds `if` with a constant condition, `repeat` ≤ 0 and `until`/`wait.until` that are already true; drops code after a terminator it exposes |
+| `dce` | done | removes unused `pure`/`read` ops until nothing changes; never removes writes. Also removes an unused `call` to a *discardable* proc (no writes, no effects on the world, no explicit yield, cannot diverge; see [optimizations.md](optimizations.md#1c-effect-summaries-and-unused-calls)). Run it before `lower-ret` |
+| `dse` | done | within straight-line code: a store overwritten before anything can see it, `set` + `change` with literals folded into one `set`, and a read of a known literal replaced by it. Applies to shared variables too, because nothing can observe a value between two stores with no yield; see [optimizations.md](optimizations.md#2-copy-propagation-and-dead-stores) |
+| `dead-vars` | done, opt-in | deletes writes to `internal` variables and lists that nothing reads. Not in `-O1` (it erases the hidden item of an unused `pyfor`, which the decompiler needs) |
+| `indvars` | done | `for`-shaped `until` loops whose iterator is never read become `repeat`, when the bounds are provably finite integers and the end is invariant; see [optimizations.md](optimizations.md#1d-counted-for--repeat-indvars) |
 | `licm` | planned | hoisting out of loops is only legal over pure ops, or over reads with no write/yield in the loop |
-| `inline` | done | inlines small non-recursive procs at call sites outside loop conditions; see [optimizations.md](optimizations.md#1-inlining-returning-procs-then-folding--o1); skips `noinline` procs; `-p O1` runs `inline`, `constfold`, `unroll`, `constfold`, `dce`, then `legalize` |
+| `inline` | done | inlines small non-recursive procs at call sites outside loop conditions; see [optimizations.md](optimizations.md#1-inlining-returning-procs-then-folding--o1); skips `noinline` procs; `-p O1` runs `inline`, `constfold`, `indvars`, `unroll`, `constfold`, `dse`, `constfold`, `dce`, then `legalize` |
 | `unroll` | done | unrolls constant-count `repeat` loops and `for`-shaped `until` loops inside `warp` procs, within a trip and size budget; skips `nounroll` loops; never touches loops that yield today; see [optimizations.md](optimizations.md#1b-unrolling-counted-loops) |
 | `warp-infer` | planned | mark procs `warp` when that cannot change behavior (no yields, bounded loops, no visible effects mid-body) |
 | `event-graph` | planned analysis | broadcast → receivers, and the variable read/write sets for each script. It feeds yield-aware tree-safety and finds broadcast-as-goto chains like `spaghetti-goto.sdsl` (the thread model is in `scratchpiler/observations.md`) |
