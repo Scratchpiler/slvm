@@ -1,5 +1,5 @@
-import { roots, idGenerator, freshInternal, declareVar, mkOp, ref, sym, lookupVar, cloneRegion } from '../ir.js';
-import { OPS, effectOf } from '../ops.js';
+import { roots, idGenerator, freshInternal, declareVar, mkOp, ref, lit, sym, lookupVar, cloneRegion } from '../ir.js';
+import { OPS, effectOf, typeOf } from '../ops.js';
 import { ANYTHING, WORLD, LOOP_OPS, directReads, writesOf, yieldsAt, summarize } from './effects.js';
 
 export class LegalizeError extends Error {}
@@ -153,6 +153,12 @@ function remat(hazard, gen) {
     }
 }
 
+function reload(tmp, result, wasBool, gen) {
+    if (!wasBool) return [mkOp('var.get', [sym(tmp)], { result })];
+    const stored = gen();
+    return [mkOp('var.get', [sym(tmp)], { result: stored }), mkOp('eq', [ref(stored), lit('true')], { result })];
+}
+
 function spillValue(hazard, ctx) {
     const { op, where, uses } = hazard;
     const { mod, target, gen } = ctx;
@@ -161,13 +167,14 @@ function spillValue(hazard, ctx) {
     const tmp = freshInternal(mod, target, 'var', 'spill');
     const home = where.get(op).region;
     const regionOf = (user) => where.get(user).region;
+    const wasBool = typeOf(op) === 'bool';
 
     if (!stack) {
         home.splice(home.indexOf(op) + 1, 0, mkOp('var.set', [sym(tmp), ref(op.result)]));
         for (const { op: user, argIndex } of users) {
             const r = gen();
             const region = regionOf(user);
-            region.splice(region.indexOf(user), 0, mkOp('var.get', [sym(tmp)], { result: r }));
+            region.splice(region.indexOf(user), 0, ...reload(tmp, r, wasBool, gen));
             user.args[argIndex] = ref(r);
         }
         return;
@@ -206,7 +213,7 @@ function spillValue(hazard, ctx) {
         mkOp('list.get', [stk, ref(top)], { result: item }),
         mkOp('var.set', [sym(tmp), ref(item)]),
         ...pop(),
-        mkOp('var.get', [sym(tmp)], { result: r }));
+        ...reload(tmp, r, wasBool, gen));
     user.args[argIndex] = ref(r);
 }
 

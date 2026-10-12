@@ -27,7 +27,7 @@ const isInteger = (operand) => typeof operand.lit === 'number' && Number.isInteg
 
 const INTERFERING_OPS = new Set(['sb', 'broadcast', 'broadcast.wait', 'wait', 'wait.until', 'stop', 'var.show', 'var.hide', 'list.show', 'list.hide']);
 
-function touchesOnlyConfinedState(region, ctx) {
+export function touchesOnlyConfinedState(region, ctx) {
     let isolated = true;
     walk(region, (op) => {
         if (!isolated) return;

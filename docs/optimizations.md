@@ -151,6 +151,69 @@ The count is built from the pieces: `from` and `to` literal gives a literal, `to
 
 **Measured:** a 100-iteration counted loop plus a list-length loop go from 430 to 110 dynamic blocks (`-O1` before and after). Counted loops whose iterator is used in the body, the common case, are unchanged.
 
+## 1e. Folding exits into structure (`fold-tails`)
+
+**Done:** `src/passes/tails.js`, run by `-p fold-tails` or inside `-p O2` and `-p O3`, before `inline` and again after it.
+
+Scratch has no early exit short of a `stop` block, and `lower-break` turns every `continue` into a flag variable and a guard. Both cost blocks that structure can avoid when the exit is the last thing the body does anyway:
+
+```
+if c { …; ret / stop / continue }   →   if c { … } else { rest }
+rest
+```
+
+The rest of the body moves into the arm that does not exit (nested `if`s are folded recursively, as `inline` already did for `ret`), and an exit left in tail position is then redundant and is dropped:
+
+- in a script or proc body, a trailing `stop "this script"` or a `ret` without a value;
+- in a loop body, a trailing `continue` (a `continue` already reaches the `step` region, so it is a no-op at the end);
+- a `ret` with a value stays, but `lower-ret` no longer emits the `stop` after it when it is in tail position (this part runs at every level).
+
+A loop whose `continue`s all fold needs no `cont` flag, no reset at the top and no guards. Unrolling also becomes possible, because `unroll` refuses loops that contain `continue`.
+
+**What it does not do:** a `continue` or `ret` nested under a conditional that is followed by more code (`if a { if b { continue } x } y`) would need `y` in two places, so it is left to `lower-break`. Exits inside a nested loop belong to that loop.
+
+**Cost:** folding leaves `if c { } else { rest }` where the exit was the whole then-arm. That has one block fewer than `if not c { rest }`, which is why the pass emits it, but a decompiler shows an empty first branch.
+
+**Measured:** on Paper Minecraft, 126 `if … stop` sites with no `else` are of this shape. Across Scratchpiler's 25 example programs the whole `-O2` pipeline saves 0.7% of blocks over `-O1` (1,975 → 1,961), because most examples have no early exits; `control-flow-sugar` goes from 116 to 107. On 300 generated programs with early exits and `forever` loops it is 85,701 → 82,883 blocks (−3.3%), and `-O3` reaches 82,694.
+
+## 1f. Loop exits (`fuse-breaks`, `rotate-loops`)
+
+**Done:** `src/passes/fuse-breaks.js` (in `-O2` and `-O3`), `src/passes/rotate-loops.js` (`-O3` only), helpers in `src/passes/loop-guards.js`.
+
+`lower-break` handles `break` with a flag: a `set` before the loop, a `get` and `eq` in the condition, a `set` at the break, and an `if` guard around everything after it. Two shapes avoid all of that.
+
+**`fuse-breaks`.** A `forever` or `until` body that *starts* with value ops and an `if c { break }` (no else) is evaluated at the same moment as the loop condition, so the guard moves into it:
+
+```
+forever { if c { break } rest }   →   until { cond c } do { rest }
+until { c0 } do { if c { break } rest }   →   until { cond (c0 or c) } do { rest }
+```
+
+The loop's `step` region is untouched, and `break` skipped it in the original too. The condition region gets clones of the value ops `c` depends on; the originals stay in the body (and `dce` removes them if nothing else uses them). The pass refuses when a cloned op is `random` or an `sb` reporter that the rest of the body also uses, because the two copies would not agree.
+
+When the loop is the **last op of a script or proc**, a leading `if c { stop "this script" }` ends the loop exactly as `break` would, so it is fused as well. `forever { if [alive] = 0 { stopThis() } … }` at the end of a script becomes `until [alive] = 0`. A `stop` anywhere else keeps its block.
+
+**`rotate-loops`.** For a `break` in the *middle* of a `forever` body, `P; V; if c { break }; B` becomes `P; until { c } do { B; P }`: the first iteration's prefix is peeled in front of the loop. It is legal only where the unroller is: in a `warp` proc (the loop never yields), or in an `uninterrupted` script or proc whose loop touches only `confined` state. Anywhere else it would move where the loop yields, which other scripts and the screen can observe. It also needs:
+
+- a small prefix (`ROTATE_BUDGET`, 6 ops), since it is duplicated;
+- no `break` or `continue` for this loop in the prefix, no `continue` after the guard, and a rest that does not end in a terminator (the copy of the prefix goes after it);
+- the exit condition to depend only on value ops directly in front of the guard or on values from outside the loop. Anything the rest of the body takes from the prefix would not survive the rotation, so that case is refused.
+
+**Checked by:** `test/structure.test.js` (each shape, each refusal, equivalence in eager and tree mode, the real scratch-vm on every example) and Scratchpiler's fuzzer (`earlyExits` and `foreverLoops` features, `--level 2|3`).
+
+## 1g. Negations in `if` (`swap-arms`, `invert-guards`)
+
+**Done:** `src/passes/invert-ifs.js`; `swap-arms` is in `-O2` and `-O3`, `invert-guards` in `-O3`.
+
+Scratch has `<`, `>` and `=` but no `≠`, so source like `if not (a = b)` is a `not` reporter around a comparison. Because `if/else` has two arms, the negation is free to remove:
+
+```
+if (not c) { A } else { B }   →   if c { B } else { A }          (swap-arms)
+if (not c) { A }              →   if c { } else { A }            (invert-guards)
+```
+
+Both only fire when the `not` has no other use, so no value ends up with two consumers (which `spill` would have to temp). `invert-guards` is the one that leaves an empty first branch, so it is separate and only runs at `-O3`. In Paper Minecraft 256 `if` conditions are a bare `not`.
+
 ## 2. Copy propagation and dead stores
 
 **Partly done:** `src/passes/dse.js` (`-p dse`, inside `-O1` after `unroll`) and `src/passes/dead-vars.js` (`-p dead-vars`, opt-in).
@@ -195,7 +258,7 @@ Small rewrites that know Scratch better than a generic optimizer would:
 
 Each peephole needs a Scratch-semantics proof, written next to it in `cast.js` terms.
 
-## 4. Loop outlining and limited `warp` inference (`-O2`, opt-in)
+## 4. Loop outlining and limited `warp` inference (planned, opt-in)
 
 `warp` only applies to procs, so making a script-level loop atomic means **outlining** it into a new `warp` proc and calling it. Given the measurement above, this pays off when the work exceeds the frame budget, and it is only legal when:
 
@@ -203,7 +266,7 @@ Each peephole needs a Scratch-semantics proof, written next to it in `cast.js` t
 - the loop has no explicit yields (`wait`, `ask`, `*forsecs`, `glide`, `broadcast.wait`), and
 - **nothing else in the project can observe the intermediate state.** That needs the event-graph analysis below: no other script can read the variables the loop writes while the loop runs. Scratch's scheduler is deterministic, and projects do depend on how scripts interleave.
 
-Because the last condition is hard to prove, this belongs behind an explicit flag (`-O2 --assume-no-races`), not on by default. scratch-vm stops a `warp` proc after 500 ms anyway, which limits the damage if the analysis is wrong.
+Because the last condition is hard to prove, this belongs behind an explicit flag (`--assume-no-races`), not on by default. scratch-vm stops a `warp` proc after 500 ms anyway, which limits the damage if the analysis is wrong.
 
 ## 5. Event-graph analysis
 
@@ -228,8 +291,9 @@ These are standard in LLVM and mostly **unprofitable** here. Emitting values as 
 |---|---|
 | `-O0` | `legalize` |
 | `-O1` | `inline`, `constfold`, `indvars`, `unroll`, `constfold`, `dse`, `constfold`, `dce`, then `legalize`; non-literal forwarding and the remaining peepholes are still planned |
-| `-O2` | `-O1` + loop outlining/`warp` (needs `--assume-no-races` until the event-graph analysis lands) |
-| `-Os` | `-O1` plus outlining repeated statement sequences into procs; trades dynamic blocks for fewer blocks to scroll past |
+| `-O2` | `fold-tails`, `constfold`, `inline`, `constfold`, `fold-tails`, `indvars`, `unroll`, `constfold`, `dse`, `constfold`, `dce`, `fuse-breaks`, `swap-arms`, `constfold`, `dce`, then `legalize` |
+| `-O3` | `-O2` plus `rotate-loops` (after `fuse-breaks`) and `invert-guards` (after `swap-arms`) |
+| later | loop outlining into `warp` procs (needs `--assume-no-races` until the event-graph analysis lands); `-Os`, outlining repeated statement sequences into procs |
 
 Every level reruns `verify` after each pass (already the default in `runPipeline`), and every new pass gets a fuzzer run that compares against the real scratch-vm before it is turned on by default.
 

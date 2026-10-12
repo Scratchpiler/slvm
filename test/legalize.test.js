@@ -108,3 +108,27 @@ test('lower-ret drops a trailing stop and keeps early ones', () => {
     assert.equal(out.match(/stop "this script"/g).length, 1);
     assert.doesNotMatch(out, /\bret\b/);
 });
+
+test('a boolean used twice is spilled and reloaded as a boolean', () => {
+    const source = `stage {
+  var @n
+  var @hits
+}
+
+sprite "S" {
+  script flag {
+    var.set @n, 3
+    %0 = var.get @n
+    %1 = gt %0, 2
+    if %1 {
+      var.set @n, 1
+    }
+    var.set @hits, %1
+  }
+}
+`;
+    const mod = legalize(parse(source));
+    assert.deepEqual(verify(mod, { legal: true }), []);
+    assert.match(print(mod), /eq %\d+, "true"/);
+    assert.deepEqual(observable(run(mod, { tree: true })), observable(run(parse(source))));
+});

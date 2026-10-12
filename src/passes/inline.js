@@ -1,6 +1,7 @@
 import { walk, idGenerator, cloneRegion, freshInternal, mkOp, ref, lit, sym } from '../ir.js';
 import { OPS, typeOf } from '../ops.js';
 import { summarize, yieldsAt } from './effects.js';
+import { endsInExit, foldExitsIntoTails, isReturn } from './tails.js';
 
 export const INLINE_LIMIT = 24;
 
@@ -11,29 +12,6 @@ const sizeOf = (body) => {
     walk(body, () => size++);
     return size;
 };
-
-const endsReturning = (region) => {
-    const last = region.at(-1);
-    return last?.op === 'ret' || (last?.op === 'if' && last.regions.length === 2 && last.regions.every(endsReturning));
-};
-
-function foldReturnsIntoTails(region) {
-    for (const op of region) if (op.op === 'if') op.regions = op.regions.map(foldReturnsIntoTails);
-    for (let i = 0; i < region.length - 1; i++) {
-        const op = region[i];
-        if (op.op !== 'if') continue;
-        const arms = op.regions.length === 2 ? op.regions : [op.regions[0], []];
-        const returning = arms.map(endsReturning);
-        if (!returning.some(Boolean)) continue;
-        if (!returning.every(Boolean)) {
-            const falling = returning[0] ? 1 : 0;
-            arms[falling] = foldReturnsIntoTails([...arms[falling], ...region.slice(i + 1)]);
-        }
-        op.regions = arms;
-        return region.slice(0, i + 1);
-    }
-    return region;
-}
 
 const returnsAreInTailPosition = (region, tail) => region.every((op, i) => {
     const isTail = tail && i === region.length - 1;
@@ -102,9 +80,9 @@ function keepsAtomicity(callee, ctx) {
 function expand(call, callee, ctx) {
     const { mod, target, gen, defs } = ctx;
     const wantsResult = call.result !== null;
-    let body = foldReturnsIntoTails(cloneRegion(callee.body, gen));
+    let body = foldExitsIntoTails(cloneRegion(callee.body, gen), isReturn);
     if (!returnsAreInTailPosition(body, true)) return null;
-    if (wantsResult && !(endsReturning(body) && everyReturnHasValue(body))) return null;
+    if (wantsResult && !(endsInExit(body, isReturn) && everyReturnHasValue(body))) return null;
 
     const operands = new Map(callee.params.map((name, i) => [name, call.args[i]]));
     const isBool = (operand) => operand.ref !== undefined && defs.has(operand.ref) && typeOf(defs.get(operand.ref)) === 'bool';

@@ -164,7 +164,7 @@ The IR has two levels. `verify(mod)` checks **canonical** IR, which is what irge
 
 | Rejected in legal IR | Pass | Lowering |
 |---|---|---|
-| `ret x` | `lower-ret` | `var.set @__ret_<p>, x` + `stop "this script"`. A `stop` at the very end of a proc body is dropped |
+| `ret x` | `lower-ret` | `var.set @__ret_<p>, x` + `stop "this script"`. The `stop` is dropped when the `ret` is in tail position: the end of a proc body, or the end of the arms of an `if` that ends it |
 | `%r = call ...` | `lower-ret` | `call` + `%r = var.get @__ret_<p>`. Whether `%r` needs a temp is left to `spill` |
 | `break`, `continue` | `lower-break` | flag variables + guards, using compiler flag variables; see below |
 | writes/calls in a condition region | `rotate-cond` | see below |
@@ -201,7 +201,7 @@ Scratch evaluates a reporter tree *at the moment its block runs*, so `emit` will
 
 1. **Pure tree used more than once** (for example `arg n`, or `sub (arg n), 1`): clone the whole tree before each extra use (up to 8 ops).
 2. **Read used more than once, unclobbered at every use** (for example `[steps]` read three times with nothing writing it in between): re-read it at each use instead of storing it. `random` is never re-read.
-3. **Anything else used more than once, or a single-use value that is clobbered**: store it in an internal temp right after its definition, and reload it right before each consumer. If the consumer is itself a value and the hazard comes later, the consumer is spilled instead, which keeps the reload next to where it is used.
+3. **Anything else used more than once, or a single-use value that is clobbered**: store it in an internal temp right after its definition, and reload it right before each consumer. A `bool` is reloaded as `eq temp, "true"` so it can still sit in a boolean slot. If the consumer is itself a value and the hazard comes later, the consumer is spilled instead, which keeps the reload next to where it is used.
 4. **The temp would be clobbered by recursion**: when a call between the store and the reload can reach the current proc, a plain temp would be overwritten by the inner activation. The value is pushed to the `_scratchpiler_internal_slvm_stack` list instead, and popped into a temp right before its use. Every `stop "this script"` in between gets a pop first, so early returns leave the stack balanced.
 
 With these rules, `return-functions.sl` needs one temp and `loops.sl` needs none. `fib.sl` computes `fib(10) = 55` and finishes with an empty stack.
@@ -276,10 +276,14 @@ Results that are not finite (`div 1, 0`) are left for the runtime instead of bei
 | `dead-vars` | done, opt-in | deletes writes to `internal` variables and lists that nothing reads. Not in `-O1` (it erases the hidden item of an unused `pyfor`, which the decompiler needs) |
 | `indvars` | done | `for`-shaped `until` loops whose iterator is never read become `repeat`, when the bounds are provably finite integers and the end is invariant; see [optimizations.md](optimizations.md#1d-counted-for--repeat-indvars) |
 | `licm` | planned | hoisting out of loops is only legal over pure ops, or over reads with no write/yield in the loop |
-| `inline` | done | inlines small non-recursive procs at call sites outside loop conditions; see [optimizations.md](optimizations.md#1-inlining-returning-procs-then-folding--o1); skips `noinline` procs; `-p O1` runs `inline`, `constfold`, `indvars`, `unroll`, `constfold`, `dse`, `constfold`, `dce`, then `legalize` |
+| `inline` | done | inlines small non-recursive procs at call sites outside loop conditions; see [optimizations.md](optimizations.md#1-inlining-returning-procs-then-folding--o1); skips `noinline` procs; `-p O1` runs `inline`, `constfold`, `indvars`, `unroll`, `constfold`, `dse`, `constfold`, `dce`, then `legalize`; `-p O2` and `-p O3` add the passes above (see [Pipelines](optimizations.md#pipelines)) |
 | `unroll` | done | unrolls constant-count `repeat` loops and `for`-shaped `until` loops inside `warp` procs, within a trip and size budget; skips `nounroll` loops; never touches loops that yield today; see [optimizations.md](optimizations.md#1b-unrolling-counted-loops) |
 | `warp-infer` | planned | mark procs `warp` when that cannot change behavior (no yields, bounded loops, no visible effects mid-body) |
 | `event-graph` | planned analysis | broadcast → receivers, and the variable read/write sets for each script. It feeds yield-aware tree-safety and finds broadcast-as-goto chains like `spaghetti-goto.sdsl` (the thread model is in `scratchpiler/observations.md`) |
+| `fold-tails` | done | moves the rest of a body into the non-exiting arm of an `if` whose other arm ends in `ret`, `stop "this script"` or (in a loop) `continue`, then drops exits left in tail position; see [optimizations.md](optimizations.md#1e-folding-exits-into-structure-fold-tails) |
+| `fuse-breaks` | done | a leading `if c { break }` in a `forever` or `until` joins the loop condition; so does a leading `stop "this script"` in a loop that ends a script or proc; see [optimizations.md](optimizations.md#1f-loop-exits-fuse-breaks-rotate-loops) |
+| `rotate-loops` | done | peels the prefix of a `forever` with a `break` in the middle and turns it into an `until`; only in `warp` procs and `uninterrupted` code over `confined` state |
+| `swap-arms`, `invert-guards` | done | `if (not c) {A} else {B}` becomes `if c {B} else {A}`; `invert-guards` also rewrites `if (not c) {A}` as `if c {} else {A}`. See [optimizations.md](optimizations.md#1g-negations-in-if-swap-arms-invert-guards) |
 | `lower-ret`, `lower-break`, `rotate-cond`, `materialize-bool`, `spill` | done | legalization, see above; `-p legalize` runs all of them in order |
 | `lower-ptr` | planned | pointer ops → `__heap` list accesses |
 
