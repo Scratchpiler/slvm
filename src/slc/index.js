@@ -20,6 +20,9 @@ function literalText(value, kind) {
     return String(value);
 }
 
+const PARAM_KINDS = { '%s': 'text', '%n': 'num', '%b': 'bool' };
+const kindsOf = (proccode) => (proccode.match(/%[sbn]/g) ?? []).map((k) => PARAM_KINDS[k]);
+
 function usesBoolArg(proc, param) {
     let found = false;
     walk(proc.body, (op) => { if (op.op === 'arg.b' && op.args[0].name === param) found = true; });
@@ -55,11 +58,18 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
         const tagBlock = (blockId, tag) => { if (tag !== undefined) tags.push({ blockId, tag }); };
         const isStage = target.kind === 'stage';
         const signatures = new Map(target.procs.map((proc) => {
+            const existing = resolveProc(target, proc);
             if (proc.extern) {
-                const existing = resolveProc(target, proc);
                 if (!existing) throw new SlcError(`extern proc @${proc.name} has no existing prototype (resolveProc returned nothing)`);
-                const kinds = (existing.proccode.match(/%[sbn]/g) ?? []).map((k) => (k === '%b' ? 'bool' : 'text'));
-                return [proc.name, { ...existing, kinds, warp: String(existing.warp ?? proc.warp) }];
+                return [proc.name, { ...existing, kinds: kindsOf(existing.proccode), warp: String(existing.warp ?? proc.warp) }];
+            }
+            const existingKinds = existing ? kindsOf(existing.proccode) : [];
+            const keepsExisting = existing
+                && existingKinds.length === proc.params.length
+                && existing.argumentids?.length === proc.params.length
+                && proc.params.every((p, i) => existingKinds[i] === 'bool' || !usesBoolArg(proc, p));
+            if (keepsExisting) {
+                return [proc.name, { proccode: existing.proccode, argumentids: existing.argumentids, kinds: existingKinds, warp: proc.warp ? 'true' : 'false' }];
             }
             const kinds = proc.params.map((p) => (usesBoolArg(proc, p) ? 'bool' : 'text'));
             return [proc.name, {
@@ -81,7 +91,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
         };
         const broadcastField = (name) => ({ name: 'BROADCAST_OPTION', value: name, id: broadcastId(name), variableType: 'broadcast_msg' });
 
-        function emitter(...regions) {
+        function emitter(regions, boolParams = new Set()) {
             const defs = new Map();
             for (const region of regions) walk(region, (op) => { if (op.result !== null) defs.set(op.result, op); });
             const shadowFor = (kind, value, parent, menu) => {
@@ -147,7 +157,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
                 const op = defs.get(id);
                 if (op.op === 'truthy') throw new SlcError('`truthy` can only be used directly in a boolean slot');
                 if (op.op === 'arg' || op.op === 'arg.b') {
-                    const opcode = op.op === 'arg' ? 'argument_reporter_string_number' : 'argument_reporter_boolean';
+                    const opcode = op.op === 'arg.b' || boolParams.has(op.args[0].name) ? 'argument_reporter_boolean' : 'argument_reporter_string_number';
                     return add(opcode, parent, { fields: { VALUE: { name: 'VALUE', value: op.args[0].name } } }).id;
                 }
                 if (op.op === 'sb') {
@@ -189,7 +199,10 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
                         const block = add('procedures_call', parent, {
                             mutation: { tagName: 'mutation', children: [], proccode: sig.proccode, argumentids: JSON.stringify(sig.argumentids), warp: sig.warp },
                         });
-                        sig.argumentids.forEach((argId, i) => setInput(block, argId, sig.kinds[i], op.args[i]));
+                        sig.argumentids.forEach((argId, i) => {
+                            if (sig.kinds[i] === 'bool' && op.args[i].lit === '') return;
+                            setInput(block, argId, sig.kinds[i], op.args[i]);
+                        });
                         return block;
                     }
                     case 'sb': {
@@ -227,7 +240,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
 
             return { emitStack, setInput };
         }
-        const emitRoot = (body, parent) => emitter(body).emitStack(body, parent);
+        const emitRoot = (body, parent, boolParams) => emitter([body], boolParams).emitStack(body, parent);
 
         let x = 50;
         const place = (block) => {
@@ -257,7 +270,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
             def.inputs.custom_block = { name: 'custom_block', block: proto.id, shadow: proto.id };
             place(def);
             tagBlock(def.id, proc.tag);
-            def.next = emitRoot(proc.body, def.id);
+            def.next = emitRoot(proc.body, def.id, new Set(proc.params.filter((_, i) => sig.kinds[i] === 'bool')));
         }
 
         for (const script of target.scripts) {
@@ -270,7 +283,7 @@ export function slc(mod, { uid = counterUid('slc_'), opcodes = {}, resolveVariab
             if (message !== undefined) hat.fields.BROADCAST_OPTION = broadcastField(message);
             if (script.hat.with) {
                 const region = script.hat.with;
-                emitter(region).setInput(hat, 'VALUE', 'num', region.at(-1).args[0]);
+                emitter([region]).setInput(hat, 'VALUE', 'num', region.at(-1).args[0]);
             } else if (numberInput) {
                 const [name, value] = numberInput;
                 const shadow = add('math_number', hat.id, { shadow: true, fields: { NUM: { name: 'NUM', value: String(value) } } });

@@ -30,28 +30,41 @@ const DIVERGING_LOOPS = new Set(['forever', 'until', 'wait.until']);
 
 const touchesWorld = (op) => WORLD_OPS.has(op.op) || (op.op === 'stop' && op.args[0].lit !== 'this script');
 
-export function summarize(target) {
+function procFacts(proc) {
+    const facts = {
+        writes: new Set(proc.extern ? [ANYTHING] : []),
+        reads: new Set(proc.extern ? [ANYTHING] : []),
+        callees: new Set(),
+        explicitYield: !!proc.extern,
+        world: !!proc.extern,
+        diverges: !!proc.extern,
+    };
+    walk(proc.body, (op) => {
+        for (const w of ownWrites(op)) facts.writes.add(w);
+        if (op.op !== 'call') for (const r of directReads(op)) facts.reads.add(r);
+        if (op.op === 'call') facts.callees.add(op.callee);
+        if (EXPLICIT_YIELDS(op)) facts.explicitYield = true;
+        if (touchesWorld(op)) facts.world = true;
+        if (DIVERGING_LOOPS.has(op.op)) facts.diverges = true;
+    });
+    return facts;
+}
+
+export function summarize(target, cache = null) {
     const summaries = new Map();
     for (const proc of target.procs) {
-        const s = {
+        let facts = cache?.get(proc);
+        if (!facts) {
+            facts = procFacts(proc);
+            cache?.set(proc, facts);
+        }
+        summaries.set(proc.name, {
+            ...facts,
             proc,
-            writes: new Set(proc.extern ? [ANYTHING] : []),
-            reads: new Set(proc.extern ? [ANYTHING] : []),
-            callees: new Set(),
-            explicitYield: !!proc.extern,
-            world: !!proc.extern,
-            diverges: !!proc.extern,
+            writes: new Set(facts.writes),
+            reads: new Set(facts.reads),
             reaches: new Set(),
-        };
-        walk(proc.body, (op) => {
-            for (const w of ownWrites(op)) s.writes.add(w);
-            if (op.op !== 'call') for (const r of directReads(op)) s.reads.add(r);
-            if (op.op === 'call') s.callees.add(op.callee);
-            if (EXPLICIT_YIELDS(op)) s.explicitYield = true;
-            if (touchesWorld(op)) s.world = true;
-            if (DIVERGING_LOOPS.has(op.op)) s.diverges = true;
         });
-        summaries.set(proc.name, s);
     }
     for (const s of summaries.values()) {
         const stack = [...s.callees];
@@ -72,6 +85,31 @@ export function summarize(target) {
             s.diverges ||= other.diverges;
         }
         if (s.reaches.has(s.proc.name)) s.diverges = true;
+    }
+    return summaries;
+}
+
+const FLAGS = ['explicitYield', 'world', 'diverges'];
+const added = (before, after) => [...after].filter((key) => !before.has(key));
+const covers = (after, before) => [...before].every((key) => after.has(key));
+
+export function resummarize(summaries, target, proc, cache) {
+    const before = cache.get(proc);
+    const after = procFacts(proc);
+    cache.set(proc, after);
+    const onlyGrew = before
+        && summaries.get(proc.name)?.proc === proc
+        && FLAGS.every((flag) => before[flag] === after[flag])
+        && before.callees.size === after.callees.size && covers(after.callees, before.callees)
+        && covers(after.writes, before.writes) && covers(after.reads, before.reads);
+    if (!onlyGrew) return summarize(target, cache);
+    const writes = added(before.writes, after.writes);
+    const reads = added(before.reads, after.reads);
+    if (!writes.length && !reads.length) return summaries;
+    for (const s of summaries.values()) {
+        if (s.proc !== proc && !s.reaches.has(proc.name)) continue;
+        for (const w of writes) s.writes.add(w);
+        for (const r of reads) s.reads.add(r);
     }
     return summaries;
 }

@@ -1,6 +1,7 @@
 import { OPS, EFFECT_RANK, effectOf, typeOf, isTerminator } from './ops.js';
-import { roots, lookupVar } from './ir.js';
+import { roots } from './ir.js';
 import { findHazard, rootContext } from './passes/spill.js';
+import { summarize } from './passes/effects.js';
 
 export function verify(mod, { legal = false } = {}) {
     const errors = [];
@@ -27,6 +28,33 @@ export function verify(mod, { legal = false } = {}) {
         }
     }
 
+    const summaries = new Map();
+    const summariesOf = (target) => {
+        if (!summaries.has(target)) summaries.set(target, summarize(target));
+        return summaries.get(target);
+    };
+
+    const varIndexes = new Map();
+    const findVar = (target, name, kind) => {
+        if (!varIndexes.has(target)) {
+            const index = new Map();
+            for (const t of [mod.targets.find((other) => other.kind === 'stage'), target]) {
+                for (const v of t?.vars ?? []) index.set(`${v.kind}:${v.name}`, v);
+            }
+            varIndexes.set(target, index);
+        }
+        return varIndexes.get(target).get(`${kind}:${name}`);
+    };
+    const procIndexes = new Map();
+    const findProc = (target, name) => {
+        if (!procIndexes.has(target)) {
+            const index = new Map();
+            for (const p of target.procs) if (!index.has(p.name)) index.set(p.name, p);
+            procIndexes.set(target, index);
+        }
+        return procIndexes.get(target).get(name);
+    };
+
     for (const { target, proc, script, body } of roots(mod)) {
         const where = proc ? `proc @${proc.name}` : `script ${script.hat.event}`;
         const fail = (op, msg) => errors.push(`${where}${op?.line ? ` (line ${op.line})` : ''}: ${msg}`);
@@ -51,7 +79,7 @@ export function verify(mod, { legal = false } = {}) {
                 if (a.ref !== undefined && !scope.has(a.ref)) fail(op, `%${a.ref} used before definition or out of scope`);
                 if (want === 'var' || want === 'list') {
                     if (a.sym === undefined) fail(op, `\`${op.op}\` operand ${i} must be a @${want}`);
-                    else if (!lookupVar(mod, target, a.sym, want)) fail(op, `undeclared ${want} @${a.sym}`);
+                    else if (!findVar(target, a.sym, want)) fail(op, `undeclared ${want} @${a.sym}`);
                 } else if (want === 'name') {
                     if (a.name === undefined) fail(op, `\`${op.op}\` needs a parameter name`);
                     else if (!proc || !proc.params.includes(a.name)) fail(op, `\`${a.name}\` is not a parameter of this proc`);
@@ -63,7 +91,7 @@ export function verify(mod, { legal = false } = {}) {
 
             const type = typeOf(op);
             if (op.op === 'call') {
-                const callee = target.procs.find((p) => p.name === op.callee);
+                const callee = findProc(target, op.callee);
                 if (!callee) fail(op, `call to undefined proc @${op.callee}`);
                 else if (callee.extern && op.result !== null) fail(op, `@${op.callee} is extern; its return value is unknown`);
                 else {
@@ -102,8 +130,9 @@ export function verify(mod, { legal = false } = {}) {
             }
         };
 
-        const checkRegion = (region, outer, ctx) => {
-            const scope = new Set(outer);
+        const scope = new Set();
+        const checkRegion = (region, ctx) => {
+            const added = [];
             region.forEach((op, i) => {
                 if (!OPS[op.op]) return fail(op, `unknown op \`${op.op}\``);
                 checkOp(op, scope, ctx);
@@ -126,20 +155,24 @@ export function verify(mod, { legal = false } = {}) {
                             }
                         }
                     }
-                    checkRegion(r, scope, {
+                    checkRegion(r, {
                         inLoop: !isCond && !isStep && (spec.loop || ctx.inLoop),
                         inCond: isCond,
                     });
                 });
-                if (op.result !== null) scope.add(op.result);
+                if (op.result !== null && !scope.has(op.result)) {
+                    scope.add(op.result);
+                    added.push(op.result);
+                }
             });
+            for (const id of added) scope.delete(id);
         };
 
-        checkRegion(body, new Set(), { inLoop: false, inCond: false });
+        checkRegion(body, { inLoop: false, inCond: false });
 
         const hatRegion = script?.hat.with;
         if (hatRegion) {
-            checkRegion(hatRegion, new Set(), { inLoop: false, inCond: false, inHat: true });
+            checkRegion(hatRegion, { inLoop: false, inCond: false, inHat: true });
             if (hatRegion.at(-1)?.op !== 'value') fail(null, 'a hat region must end with `value`');
             const uses = new Map();
             for (const op of hatRegion) {
@@ -156,7 +189,7 @@ export function verify(mod, { legal = false } = {}) {
         }
 
         if (legal && !errors.length) {
-            const hazard = findHazard(body, rootContext(mod, { target, proc, script }));
+            const hazard = findHazard(body, rootContext(mod, { target, proc, script }, summariesOf(target)));
             if (hazard) {
                 const why = hazard.kind === 'spill' && hazard.point
                     ? 'may change before its block runs'

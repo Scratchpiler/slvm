@@ -1,6 +1,6 @@
 import { roots, idGenerator, freshInternal, declareVar, mkOp, ref, lit, sym, lookupVar, cloneRegion } from '../ir.js';
 import { OPS, effectOf, typeOf } from '../ops.js';
-import { ANYTHING, WORLD, LOOP_OPS, directReads, writesOf, yieldsAt, summarize } from './effects.js';
+import { ANYTHING, WORLD, LOOP_OPS, directReads, writesOf, yieldsAt, summarize, resummarize } from './effects.js';
 
 export class LegalizeError extends Error {}
 
@@ -232,15 +232,18 @@ export function rootContext(mod, root, summaries) {
 const MAX_ROUNDS = 10000;
 
 export function spill(mod) {
+    const procFacts = new WeakMap();
     for (const root of roots(mod)) {
         const holder = root.proc ?? root.script;
+        let summaries = summarize(root.target, procFacts);
         for (let round = 0; ; round++) {
             if (round > MAX_ROUNDS) throw new LegalizeError('spill did not converge');
-            const ctx = rootContext(mod, root);
+            const ctx = rootContext(mod, root, summaries);
             const hazard = findHazard(holder.body, ctx);
             if (!hazard) break;
             if (hazard.kind === 'remat') remat(hazard, ctx.gen);
             else spillValue(hazard, ctx);
+            if (root.proc) summaries = resummarize(summaries, root.target, root.proc, procFacts);
         }
     }
     return mod;

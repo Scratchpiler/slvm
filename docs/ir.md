@@ -72,7 +72,8 @@ sprite "Cat" {                   ; one per sprite; names can be quoted
 - **`uninterrupted`** on a script or proc says that the code runs in one thread only, and that no other thread can stop or restart that thread: nothing else broadcasts its message or switches to its backdrop, and nothing runs `stop all`, `stop other scripts in sprite` or `delete this clone` around it. User input (green flag, keys, clicks) still can, but it only arrives between frames, as it does on a slower or faster computer. This is also a client-supplied fact.
 - `warp` means "run without screen refresh". `returns` means the proc can `ret` a value.
 - **`noinline`** tells the `inline` pass never to inline this proc. It does not change what the proc does.
-- An **`extern`** proc has a signature but no body: it already exists in the project as blocks. `slc` asks `resolveProc(target, proc)` for its real proccode and argument ids and emits only the calls. Its effects are unknown, so analysis assumes it may write anything, yield, and call back into any proc (which forces `spill` to use the stack across it). A call to an extern proc cannot use a return value.
+- An **`extern`** proc has a signature but no body: it already exists in the project as blocks. `slc` asks `resolveProc(target, proc)` for its real proccode and argument ids and emits only the calls.
+- A proc **with** a body is also passed to `resolveProc`. If the project already has a prototype for it with the same number of inputs, and no parameter the body reads as `arg.b` is a text input there, `slc` keeps that proccode (labels between inputs, `%n` and `%b` included) and its argument ids. Reads of a `%b` parameter become boolean argument reporters, `%n` inputs get number shadows, and a call that passes `""` to a `%b` input leaves it empty, which is what an empty boolean slot in Scratch is. Otherwise the proccode is `name %s %b …`. Its effects are unknown, so analysis assumes it may write anything, yield, and call back into any proc (which forces `spill` to use the stack across it). A call to an extern proc cannot use a return value.
 - A **hat region** (`with { … value %v }`) computes a hat's input as a reporter tree. It may only contain value ops that read or are pure, each used exactly once, and must end with `value`. `slc` nests the tree into the hat's `VALUE` input.
 
 ### Loop hints and tags
@@ -289,7 +290,9 @@ Results that are not finite (`div 1, 0`) are left for the runtime instead of bei
 
 The optimizations still to build, in priority order and with their legality conditions, are in [optimizations.md](optimizations.md).
 
-`runPipeline(mod, names, { verifyEach, printAfterAll })` runs the passes in order and re-verifies after each one, like `opt -verify-each`.
+`runPipeline(mod, names, { verifyEach, printAfterAll })` runs the passes in order and re-verifies after each one, like `opt -verify-each`. `verifyEach` defaults to true; clients that verify the final module anyway (`slc` always does) can pass `false` to skip the per-pass checks, which cost about a third of compile time on large modules.
+
+Effect summaries (`summarize` in `passes/effects.js`) are built from per-proc facts that a caller may cache in a `WeakMap` keyed by proc. `spill` keeps one cache for the whole module and, after each round, re-reads only the proc it just changed (`resummarize`): spilling only adds reads and writes of hidden temporaries to that proc, so the summaries of everything that reaches it simply gain those keys. Anything else (a changed callee set or effect flag) falls back to a full `summarize`. On Paper Minecraft this took spill from re-walking the whole target on every round to re-walking one proc.
 
 ---
 
